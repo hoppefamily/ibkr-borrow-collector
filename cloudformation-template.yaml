@@ -17,6 +17,14 @@ Parameters:
       - 'true'
       - 'false'
 
+  CreateOIDCProvider:
+    Type: String
+    Description: 'Create new OIDC provider (set to false if already exists in your AWS account)'
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
   GitHubRepository:
     Type: String
     Description: 'GitHub repository in format owner/repo (required if UseOIDC is true)'
@@ -42,6 +50,9 @@ Conditions:
   EnableGlacierTransition: !Not [!Equals [!Ref TransitionToGlacierDays, 0]]
   UseOIDCAuth: !Equals [!Ref UseOIDC, 'true']
   UseAccessKeys: !Not [!Condition UseOIDCAuth]
+  ShouldCreateOIDCProvider: !And
+    - !Condition UseOIDCAuth
+    - !Equals [!Ref CreateOIDCProvider, 'true']
 
 Resources:
   # S3 Bucket for storing borrow rate data
@@ -161,7 +172,7 @@ Resources:
   # GitHub OIDC Provider (for OIDC authentication)
   GitHubOIDCProvider:
     Type: AWS::IAM::OIDCProvider
-    Condition: UseOIDCAuth
+    Condition: ShouldCreateOIDCProvider
     Properties:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
@@ -185,7 +196,10 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+              Federated: !If
+                - ShouldCreateOIDCProvider
+                - !GetAtt GitHubOIDCProvider.Arn
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
