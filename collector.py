@@ -458,7 +458,7 @@ def process_file(
     # Generate timestamped filename
     current_time = datetime.utcnow()
     timestamp = current_time.strftime('%Y%m%d_%H%M%S')
-    
+
     # Handle different file extensions (.txt or .dat)
     if filename.endswith('.txt'):
         base_name = filename.rsplit('.', 1)[0]  # Remove .txt extension
