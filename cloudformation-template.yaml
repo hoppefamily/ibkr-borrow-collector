@@ -26,9 +26,7 @@ Parameters:
 Conditions:
   HasBucketName: !Not [!Equals [!Ref BucketName, '']]
   EnableExpiration: !Not [!Equals [!Ref DataRetentionDays, 0]]
-  EnableGlacierTransition: !And
-    - !Not [!Equals [!Ref TransitionToGlacierDays, 0]]
-    - !Not [!Equals [!Ref TransitionToGlacierDays, !Ref 'AWS::NoValue']]
+  EnableGlacierTransition: !Not [!Equals [!Ref TransitionToGlacierDays, 0]]
 
 Resources:
   # S3 Bucket for storing borrow rate data
@@ -57,7 +55,7 @@ Resources:
               - TransitionInDays: 30
                 StorageClass: INTELLIGENT_TIERING
             NoncurrentVersionExpirationInDays: 1
-          
+
           # Optional: Transition to Glacier for long-term archival
           - Id: GlacierTransition
             Status: !If [EnableGlacierTransition, Enabled, Disabled]
@@ -65,14 +63,14 @@ Resources:
             Transitions:
               - TransitionInDays: !Ref TransitionToGlacierDays
                 StorageClass: GLACIER_IR
-          
+
           # Optional: Expire old data
           - Id: DataExpiration
             Status: !If [EnableExpiration, Enabled, Disabled]
             Prefix: 'ibkr/borrow/'
             ExpirationInDays: !Ref DataRetentionDays
             NoncurrentVersionExpirationInDays: 1
-          
+
           # Delete incomplete multipart uploads after 7 days
           - Id: CleanupIncompleteUploads
             Status: Enabled
@@ -121,7 +119,7 @@ Resources:
             Resource:
               - !Sub '${BorrowDataBucket.Arn}/ibkr/borrow/*'
               - !GetAtt BorrowDataBucket.Arn
-          
+
           # List bucket to find latest snapshots
           - Sid: ListBucket
             Effect: Allow
@@ -274,7 +272,7 @@ Outputs:
     Description: 'Instructions for configuring GitHub Secrets'
     Value: !Sub |
       Add these secrets to your GitHub repository (Settings → Secrets → Actions):
-      
+
       AWS_ACCESS_KEY_ID: ${GitHubActionsAccessKey}
       AWS_SECRET_ACCESS_KEY: ${GitHubActionsAccessKey.SecretAccessKey}
       AWS_REGION: ${AWS::Region}
