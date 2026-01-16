@@ -20,6 +20,47 @@ Yet this data is scattered, delayed, and often paywalled. This collector makes i
 - ✅ **Comprehensive** (18 markets: USA, UK, Germany, Switzerland, Italy, Japan, Hong Kong, Australia, Austria, Belgium, Canada, Netherlands, France, Mexico, Spain, Sweden, Singapore, India)
 - ✅ **Efficient** (98% compression via delta encoding)
 
+## Prerequisites
+
+### System Requirements
+
+**Required:**
+- Python 3.11 or later
+- `xdelta3` (for delta compression) - Install with:
+  - **macOS**: `brew install xdelta`
+  - **Ubuntu/Debian**: `apt-get install xdelta3`
+  - **Alpine Linux**: `apk add xdelta3`
+  - **Windows**: Download from [xdelta.org](http://xdelta.org/)
+
+**Python Dependencies:**
+```bash
+pip install boto3>=1.26.0
+```
+
+**AWS Requirements:**
+- AWS account with permissions to create:
+  - S3 buckets
+  - IAM roles and policies
+  - OIDC providers
+- AWS CLI configured (`aws configure`)
+
+**GitHub Requirements (for automated collection):**
+- GitHub repository with Actions enabled
+- Repository secrets access (Settings → Secrets → Actions)
+
+### Quick Verification
+
+```bash
+# Check xdelta3 is installed
+xdelta3 -V
+
+# Check AWS CLI is configured
+aws sts get-caller-identity
+
+# Check Python and boto3
+python3 -c "import boto3; print(f'boto3 {boto3.__version__}')"
+```
+
 ## What You Get
 
 **Borrow rate data (.txt files):**
@@ -34,7 +75,7 @@ Yet this data is scattered, delayed, and often paywalled. This collector makes i
 - Concentration margin adjustments
 - Per-security capital requirements
 
-**Storage cost:** ~$0.20/month for complete global coverage  
+**Storage cost:** ~$0.20/month for complete global coverage
 **Data volume:** 18 borrow markets + 8 margin markets
 **Frequency:** 96 snapshots/day, 98% compression
 
@@ -160,8 +201,9 @@ s3://your-bucket/ibkr/borrow/
 
 ## Documentation
 
-- 📖 **[DEPLOYMENT.md](DEPLOYMENT.md)** - Full deployment guide
+- 📖 **[DEPLOYMENT.md](DEPLOYMENT.md)** - Full deployment guide with CloudFormation
 - 🔧 **[EXAMPLES.md](EXAMPLES.md)** - Data access patterns & code examples
+- 🏗️ **[ARCHITECTURE.md](ARCHITECTURE.md)** - Delta compression strategy, failure modes, and system design
 
 ## Architecture Highlights
 

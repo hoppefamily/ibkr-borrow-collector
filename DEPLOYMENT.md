@@ -34,15 +34,6 @@ aws cloudformation create-stack \
     ParameterKey=DataRetentionDays,ParameterValue=730 \
     ParameterKey=TransitionToGlacierDays,ParameterValue=180 \
   --capabilities CAPABILITY_NAMED_IAM
-
-# If OIDC provider already exists in your AWS account
-aws cloudformation create-stack \
-  --stack-name ibkr-borrow-collector \
-  --template-body file://cloudformation-template.yaml \
-  --parameters \
-    ParameterKey=GitHubRepository,ParameterValue=YOUR_GITHUB_USERNAME/ibkr-borrow-collector \
-    ParameterKey=CreateOIDCProvider,ParameterValue=false \
-  --capabilities CAPABILITY_NAMED_IAM
 ```
 
 ### 2. Wait for Stack Creation
@@ -134,7 +125,6 @@ aws s3 ls s3://$S3_BUCKET/ibkr/borrow/$(date +%Y-%m-%d)/ | tail -1 | awk '{print
 | Parameter | Description | Default | Notes |
 |-----------|-------------|---------|-------|
 | `GitHubRepository` | GitHub repo (owner/repo) | hoppefamily/ibkr-borrow-collector | Required for OIDC trust policy |
-| `CreateOIDCProvider` | Create new OIDC provider | true | Set false if already exists |
 | `BucketName` | S3 bucket name | (auto-generated) | Must be globally unique |
 | `DataRetentionDays` | Days to keep data | 365 | 0 = never expire |
 | `TransitionToGlacierDays` | Days before Glacier transition | 90 | 0 = disabled |

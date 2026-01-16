@@ -9,14 +9,6 @@ Parameters:
     AllowedPattern: '^[a-z0-9.-]*$'
     ConstraintDescription: 'Bucket name must contain only lowercase letters, numbers, dots, and hyphens'
 
-  CreateOIDCProvider:
-    Type: String
-    Description: 'Create new OIDC provider (set to false if already exists in your AWS account)'
-    Default: 'true'
-    AllowedValues:
-      - 'true'
-      - 'false'
-
   GitHubRepository:
     Type: String
     Description: 'GitHub repository in format owner/repo (required for OIDC trust policy)'
@@ -40,7 +32,6 @@ Conditions:
   HasBucketName: !Not [!Equals [!Ref BucketName, '']]
   EnableExpiration: !Not [!Equals [!Ref DataRetentionDays, 0]]
   EnableGlacierTransition: !Not [!Equals [!Ref TransitionToGlacierDays, 0]]
-  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, 'true']
 
 Resources:
   # S3 Bucket for storing borrow rate data
@@ -98,28 +89,12 @@ Resources:
         - Key: DataType
           Value: Financial market data
 
-  # IAM User for GitHub Actions
-  GitHubActionsUser:
-    Type: AWS::IAM::User
-    Condition: UseAccessKeys
-    Properties:
-      UserName: !Sub '${AWS::StackName}-github-actions'
-      Tags:
-        - Key: Application
-          Value: IBKR-Borrow-Collector
-        - Key: Purpose
-          Value: GitHub Actions CI/CD
-
   # IAM Policy for S3 Access
   CollectorS3Policy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: !Sub '${AWS::StackName}-s3-access'
       Description: 'Allows IBKR borrow collector to read/write S3 data'
-      Users: !If
-        - UseAccessKeys
-        - [!Ref GitHubActionsUser]
-        - !Ref AWS::NoValue
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -150,17 +125,9 @@ Resources:
                 s3:prefix:
                   - 'ibkr/borrow/*'
 
-  # IAM Access Keys for GitHub Actions (legacy method)
-  GitHubActionsAccessKey:
-    Type: AWS::IAM::AccessKey
-    Condition: UseAccessKeys
-    Properties:
-      UserName: !Ref GitHubActionsUser
-
-  # GitHub OIDC Provider (for OIDC authentication)
+  # GitHub OIDC Provider
   GitHubOIDCProvider:
     Type: AWS::IAM::OIDCProvider
-    Condition: ShouldCreateOIDCProvider
     Properties:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
@@ -175,7 +142,6 @@ Resources:
   # IAM Role for GitHub Actions OIDC
   GitHubActionsRole:
     Type: AWS::IAM::Role
-    Condition: UseOIDCAuth
     Properties:
       RoleName: !Sub '${AWS::StackName}-github-actions-role'
       Description: 'Role for GitHub Actions to assume via OIDC'
@@ -184,10 +150,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !If
-                - ShouldCreateOIDCProvider
-                - !GetAtt GitHubOIDCProvider.Arn
-                - !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+              Federated: !GetAtt GitHubOIDCProvider.Arn
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
@@ -259,24 +222,6 @@ Resources:
         - Key: Application
           Value: IBKR-Borrow-Collector
 
-  # Secrets Manager secret for storing access keys (legacy method only)
-  GitHubActionsCredentials:
-    Type: AWS::SecretsManager::Secret
-    Condition: UseAccessKeys
-    Properties:
-      Name: !Sub '${AWS::StackName}/github-actions-credentials'
-      Description: 'AWS credentials for GitHub Actions IBKR borrow collector'
-      SecretString: !Sub |
-        {
-          "AWS_ACCESS_KEY_ID": "${GitHubActionsAccessKey}",
-          "AWS_SECRET_ACCESS_KEY": "${GitHubActionsAccessKey.SecretAccessKey}",
-          "AWS_REGION": "${AWS::Region}",
-          "S3_BUCKET": "${BorrowDataBucket}"
-        }
-      Tags:
-        - Key: Application
-          Value: IBKR-Borrow-Collector
-
 Outputs:
   BucketName:
     Description: 'Name of the S3 bucket for borrow data'
@@ -290,29 +235,11 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-BucketArn'
 
-  GitHubActionsUserArn:
-    Description: 'ARN of the IAM user for GitHub Actions (legacy method only)'
-    Condition: UseAccessKeys
-    Value: !GetAtt GitHubActionsUser.Arn
+  GitHubActionsRoleArn:
+    Description: 'ARN of IAM role for GitHub Actions OIDC authentication'
+    Value: !GetAtt GitHubActionsRole.Arn
     Export:
-      Name: !Sub '${AWS::StackName}-GitHubActionsUserArn'
-
-  AccessKeyId:
-    Description: 'AWS Access Key ID for GitHub Actions (legacy method only)'
-    Condition: UseAccessKeys
-    Value: !Ref GitHubActionsAccessKey
-
-  SecretAccessKey:
-    Description: 'AWS Secret Access Key for GitHub Actions (legacy method only) - SAVE THIS NOW!'
-    Condition: UseAccessKeys
-    Value: !GetAtt GitHubActionsAccessKey.SecretAccessKey
-
-  CredentialsSecretArn:
-    Description: 'ARN of Secrets Manager secret containing credentials (legacy method only)'
-    Condition: UseAccessKeys
-    Value: !Ref GitHubActionsCredentials
-    Export:
-      Name: !Sub '${AWS::StackName}-CredentialsSecretArn'
+      Name: !Sub '${AWS::StackName}-GitHubActionsRoleArn'
 
   LambdaRoleArn:
     Description: 'ARN of IAM role for Lambda execution (if using Lambda deployment)'
@@ -338,24 +265,13 @@ Outputs:
 
   GitHubSecretsInstructions:
     Description: 'Instructions for configuring GitHub Secrets'
-    Value: !If
-      - UseOIDCAuth
-      - !Sub |
-          OIDC Authentication (Recommended)
-          =====================================
-          Add these secrets to your GitHub repository (Settings → Secrets → Actions):
+    Value: !Sub |
+      OIDC Authentication
+      ===================
+      Add these secrets to your GitHub repository (Settings → Secrets → Actions):
 
-          AWS_ROLE_ARN: ${GitHubActionsRole.Arn}
-          AWS_REGION: ${AWS::Region}
-          S3_BUCKET: ${BorrowDataBucket}
+      AWS_ROLE_ARN: ${GitHubActionsRole.Arn}
+      AWS_REGION: ${AWS::Region}
+      S3_BUCKET: ${BorrowDataBucket}
 
-          No access keys needed! GitHub Actions will authenticate via OIDC.
-      - !Sub |
-          Access Key Authentication (Legacy)
-          ===================================
-          Add these secrets to your GitHub repository (Settings → Secrets → Actions):
-
-          AWS_ACCESS_KEY_ID: ${GitHubActionsAccessKey}
-          AWS_SECRET_ACCESS_KEY: ${GitHubActionsAccessKey.SecretAccessKey}
-          AWS_REGION: ${AWS::Region}
-          S3_BUCKET: ${BorrowDataBucket}
+      No access keys needed! GitHub Actions will authenticate via OIDC.
