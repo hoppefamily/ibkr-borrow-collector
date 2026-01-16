@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  collector:
+    build: .
+    container_name: ibkr-collector
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - S3_BUCKET=${S3_BUCKET}
+    command: >
+      --s3-bucket ${S3_BUCKET}
+      --s3-prefix ibkr/borrow
+      --log-json
+    volumes:
+      - baseline-cache:/home/collector/.ibkr-baselines
+
+volumes:
+  baseline-cache:

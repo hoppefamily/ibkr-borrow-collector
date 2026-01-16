@@ -1,0 +1,11 @@
+.git/
+.github/
+*.pyc
+__pycache__/
+*.log
+*.json
+.DS_Store
+.env
+*.txt.gz
+*.xdelta
+*.md5
