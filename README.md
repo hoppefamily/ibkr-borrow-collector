@@ -23,23 +23,33 @@ Automated collector for Interactive Brokers short borrow rates with **98% delta 
 ### 1. Deploy Infrastructure (AWS CloudFormation)
 
 ```bash
-# Deploy S3 bucket and IAM resources
+# Deploy S3 bucket and IAM resources with OIDC authentication (recommended)
 aws cloudformation create-stack \
   --stack-name ibkr-borrow-collector \
   --template-body file://cloudformation-template.yaml \
+  --parameters \
+    ParameterKey=UseOIDC,ParameterValue=true \
+    ParameterKey=GitHubRepository,ParameterValue=YOUR_USERNAME/ibkr-borrow-collector \
   --capabilities CAPABILITY_NAMED_IAM
 
 # Wait for completion
 aws cloudformation wait stack-create-complete \
   --stack-name ibkr-borrow-collector
 
-# Get credentials and bucket name
+# Get role ARN and bucket name (for OIDC)
 aws cloudformation describe-stacks \
   --stack-name ibkr-borrow-collector \
-  --query 'Stacks[0].Outputs'
+  --query 'Stacks[0].Outputs[?OutputKey==`GitHubActionsRoleArn` || OutputKey==`BucketName`]'
+
+# Configure GitHub Secrets (Settings → Secrets → Actions):
+# AWS_ROLE_ARN: <from output above>
+# AWS_REGION: us-east-1
+# S3_BUCKET: <from output above>
 ```
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions.
+✅ **No access keys needed!** GitHub Actions authenticates via OIDC.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions and legacy access key method.
 
 ### 2. Docker (Recommended)
 

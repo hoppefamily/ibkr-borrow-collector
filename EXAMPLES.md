@@ -75,7 +75,7 @@ bucket = 'my-bucket'
 
 # Download baseline
 s3.download_file(
-    bucket, 
+    bucket,
     'ibkr/borrow/2026-01-16/usa-20260116_120000.txt.gz',
     'baseline.gz'
 )
@@ -118,34 +118,34 @@ def reconstruct_from_chain(bucket, date, market, target_time):
     """Reconstruct data from baseline + delta chain."""
     s3 = boto3.client('s3')
     prefix = f'ibkr/borrow/{date}'
-    
+
     # List all files for this market
     response = s3.list_objects_v2(Bucket=bucket, Prefix=f'{prefix}/{market}')
     files = sorted([obj['Key'] for obj in response['Contents']])
-    
+
     # Find baseline and deltas up to target time
     baseline = None
     deltas = []
-    
+
     for file in files:
         timestamp = file.split('-')[1].split('.')[0]
-        
+
         if file.endswith('.gz') and '.xdelta' not in file:
             if timestamp <= target_time:
                 baseline = file
         elif file.endswith('.xdelta'):
             if timestamp <= target_time:
                 deltas.append((timestamp, file))
-    
+
     if not baseline:
         raise ValueError("No baseline found")
-    
+
     # Download and decompress baseline
     s3.download_file(bucket, baseline, 'baseline.gz')
     with gzip.open('baseline.gz', 'rb') as f_in:
         with open('current.txt', 'wb') as f_out:
             f_out.write(f_in.read())
-    
+
     # Apply deltas in order
     deltas.sort()
     for i, (ts, delta_key) in enumerate(deltas):
@@ -157,7 +157,7 @@ def reconstruct_from_chain(bucket, date, market, target_time):
             'next.txt'
         ])
         subprocess.run(['mv', 'next.txt', 'current.txt'])
-    
+
     with open('current.txt', 'r') as f:
         return f.read()
 
@@ -183,22 +183,22 @@ from collector import main
 
 def lambda_handler(event, context):
     """AWS Lambda handler for collector."""
-    
+
     # Set command-line arguments
     bucket = os.environ['S3_BUCKET']
     prefix = os.environ.get('S3_PREFIX', 'ibkr/borrow')
-    
+
     sys.argv = [
         'collector.py',
         '--s3-bucket', bucket,
         '--s3-prefix', prefix,
         '--log-json'
     ]
-    
+
     # Run collector
     try:
         exit_code = main()
-        
+
         return {
             'statusCode': 200 if exit_code == 0 else 500,
             'body': json.dumps({
@@ -240,7 +240,7 @@ class BorrowRate:
 def parse_ibkr_file(filepath: str) -> List[BorrowRate]:
     """Parse IBKR borrow rate file."""
     rates = []
-    
+
     # Handle gzipped files
     if filepath.endswith('.gz'):
         with gzip.open(filepath, 'rt') as f:
@@ -248,16 +248,16 @@ def parse_ibkr_file(filepath: str) -> List[BorrowRate]:
     else:
         with open(filepath, 'r') as f:
             lines = f.readlines()
-    
+
     for line in lines:
         # Skip header
         if line.startswith('#'):
             continue
-        
+
         parts = line.strip().split('|')
         if len(parts) != 8:
             continue
-        
+
         rates.append(BorrowRate(
             symbol=parts[0],
             currency=parts[1],
@@ -268,7 +268,7 @@ def parse_ibkr_file(filepath: str) -> List[BorrowRate]:
             fee_rate=float(parts[6]),
             available=parts[7]
         ))
-    
+
     return rates
 
 # Example usage
@@ -290,7 +290,7 @@ import gzip
 
 def compare_snapshots(file1: str, file2: str):
     """Compare two IBKR snapshots to find rate changes."""
-    
+
     def load_rates(filepath):
         rates = {}
         with gzip.open(filepath, 'rt') as f:
@@ -301,10 +301,10 @@ def compare_snapshots(file1: str, file2: str):
                 if len(parts) == 8:
                     rates[parts[0]] = float(parts[6])
         return rates
-    
+
     rates1 = load_rates(file1)
     rates2 = load_rates(file2)
-    
+
     # Find changes
     changes = []
     for symbol in rates1:
@@ -312,13 +312,13 @@ def compare_snapshots(file1: str, file2: str):
             diff = rates2[symbol] - rates1[symbol]
             if abs(diff) > 0.01:  # More than 1 basis point
                 changes.append((symbol, rates1[symbol], rates2[symbol], diff))
-    
+
     # Print top changes
     changes.sort(key=lambda x: abs(x[3]), reverse=True)
     print(f"Top 20 rate changes:")
     print(f"{'Symbol':<8} {'Old Rate':<10} {'New Rate':<10} {'Change':<10}")
     print("-" * 48)
-    
+
     for symbol, old, new, diff in changes[:20]:
         print(f"{symbol:<8} {old:>9.2f}% {new:>9.2f}% {diff:>+9.2f}%")
 
@@ -347,7 +347,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Build and run collector
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}

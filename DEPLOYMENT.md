@@ -11,22 +11,50 @@ This guide covers deploying the IBKR borrow collector infrastructure on AWS and 
 
 ## Option 1: Quick Deploy with CloudFormation (Recommended)
 
+### Authentication Methods
+
+The stack supports two authentication methods:
+
+**OIDC (Recommended)**: GitHub authenticates directly with AWS, no long-lived credentials
+- ✅ More secure (no access keys)
+- ✅ Automatic credential rotation
+- ✅ Better audit trail
+- 🎯 Default method
+
+**Access Keys (Legacy)**: Traditional IAM user with access keys
+- ⚠️ Requires manual key rotation
+- ⚠️ Keys stored in GitHub Secrets
+- 📝 Use only if OIDC is not available
+
 ### 1. Deploy Infrastructure
 
 Deploy the CloudFormation stack to create the S3 bucket and IAM resources:
 
 ```bash
-# Basic deployment with auto-generated bucket name
-aws cloudformation create-stack \
-  --stack-name ibkr-borrow-collector \
-  --template-body file://cloudformation-template.yaml \
-  --capabilities CAPABILITY_NAMED_IAM
-
-# Or with a specific bucket name
+# Recommended: OIDC authentication (default)
 aws cloudformation create-stack \
   --stack-name ibkr-borrow-collector \
   --template-body file://cloudformation-template.yaml \
   --parameters \
+    ParameterKey=UseOIDC,ParameterValue=true \
+    ParameterKey=GitHubRepository,ParameterValue=YOUR_GITHUB_USERNAME/ibkr-borrow-collector \
+  --capabilities CAPABILITY_NAMED_IAM
+
+# Alternative: Access key authentication (legacy)
+aws cloudformation create-stack \
+  --stack-name ibkr-borrow-collector \
+  --template-body file://cloudformation-template.yaml \
+  --parameters \
+    ParameterKey=UseOIDC,ParameterValue=false \
+  --capabilities CAPABILITY_NAMED_IAM
+
+# With custom bucket name and retention
+aws cloudformation create-stack \
+  --stack-name ibkr-borrow-collector \
+  --template-body file://cloudformation-template.yaml \
+  --parameters \
+    ParameterKey=UseOIDC,ParameterValue=true \
+    ParameterKey=GitHubRepository,ParameterValue=YOUR_GITHUB_USERNAME/ibkr-borrow-collector \
     ParameterKey=BucketName,ParameterValue=my-borrow-data-bucket \
     ParameterKey=DataRetentionDays,ParameterValue=730 \
     ParameterKey=TransitionToGlacierDays,ParameterValue=180 \
@@ -60,17 +88,43 @@ aws cloudformation describe-stacks \
 
 ### 4. Configure GitHub Secrets
 
+#### For OIDC Authentication (Recommended)
+
 Add the following secrets to your GitHub repository (Settings → Secrets → Actions):
 
 ```bash
-# Get the values from CloudFormation outputs
-AWS_ACCESS_KEY_ID: <from stack output>
-AWS_SECRET_ACCESS_KEY: <from stack output>
-AWS_REGION: <from stack output>
-S3_BUCKET: <from stack output>
+# Get the Role ARN from CloudFormation
+export ROLE_ARN=$(aws cloudformation describe-stacks \
+  --stack-name ibkr-borrow-collector \
+  --query 'Stacks[0].Outputs[?OutputKey==`GitHubActionsRoleArn`].OutputValue' \
+  --output text)
+
+export AWS_REGION=$(aws cloudformation describe-stacks \
+  --stack-name ibkr-borrow-collector \
+  --query 'Stacks[0].Outputs[?OutputKey==`Region`].OutputValue' \
+  --output text)
+
+export S3_BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name ibkr-borrow-collector \
+  --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' \
+  --output text)
+
+# Add to GitHub (requires gh CLI)
+gh secret set AWS_ROLE_ARN --body "$ROLE_ARN"
+gh secret set AWS_REGION --body "$AWS_REGION"
+gh secret set S3_BUCKET --body "$S3_BUCKET"
+
+# Or manually add these three secrets via GitHub UI:
+# AWS_ROLE_ARN: (the role ARN from above)
+# AWS_REGION: us-east-1 (or your region)
+# S3_BUCKET: (the bucket name from above)
 ```
 
-Or use the AWS CLI to add them directly:
+✅ **No access keys needed!** GitHub authenticates via OIDC.
+
+#### For Access Key Authentication (Legacy)
+
+Only use this if you deployed with `UseOIDC=false`:
 
 ```bash
 # Get credentials from CloudFormation
