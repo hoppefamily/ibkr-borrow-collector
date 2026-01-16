@@ -4,7 +4,7 @@
 
 **Real-time borrow fee tracking for 17,000+ global securities**
 
-Automated collection of Interactive Brokers' short-sale borrow rates across 7 major markets. Essential data infrastructure for flow trading analysis and short squeeze detection.
+Automated collection of Interactive Brokers' short-sale borrow rates and margin requirements across 18 global markets. Essential data infrastructure for flow trading analysis and short squeeze detection.
 
 ## Why This Exists
 
@@ -17,19 +17,26 @@ Automated collection of Interactive Brokers' short-sale borrow rates across 7 ma
 Yet this data is scattered, delayed, and often paywalled. This collector makes it:
 - ✅ **Free & open source**
 - ✅ **Real-time** (15-minute updates)
-- ✅ **Comprehensive** (USA, UK, Germany, Switzerland, Italy, Japan, Hong Kong)
+- ✅ **Comprehensive** (18 markets: USA, UK, Germany, Switzerland, Italy, Japan, Hong Kong, Australia, Austria, Belgium, Canada, Netherlands, France, Mexico, Spain, Sweden, Singapore, India)
 - ✅ **Efficient** (98% compression via delta encoding)
 
 ## What You Get
 
-**Historical borrow rate data for:**
+**Borrow rate data (.txt files):**
 - Rebate rates (what you earn holding cash collateral)
 - Fee rates (what you pay to borrow)
 - Available shares (supply constraints)
 - ISIN, FIGI, currency metadata
 
-**Storage cost:** ~$0.15/month for complete global coverage
-**Data volume:** 5.5 GB/year (96 snapshots/day × 17,000 stocks)
+**Margin requirement data (.dat files):**
+- Long/short initial margin percentages
+- Maintenance margin requirements
+- Concentration margin adjustments
+- Per-security capital requirements
+
+**Storage cost:** ~$0.20/month for complete global coverage  
+**Data volume:** 18 borrow markets + 8 margin markets
+**Frequency:** 96 snapshots/day, 98% compression
 
 ## Quick Start
 
@@ -128,20 +135,27 @@ history.plot(title='Borrow Fee Trends', ylabel='Fee Rate (%)')
 
 ## Data Format
 
+**Borrow rates (.txt files):**
+```csv
+#SYM|CUR|NAME|CON|ISIN|REBATERATE|FEERATE|AVAILABLE|FIGI|
+GME|USD|GAMESTOP CORP-CLASS A|270986868|US36467W1099|0.25|8.75|50000|BBG000BB5BF6|
+```
+
+**Margin requirements (.dat files):**
+```csv
+#SYM|CUR|NAME|CON|ISIN|CUSIP|LongMaintenanceMargin|LongInitialMargin|ShortMargin|Exchange|ShortInitialMargin|...
+GME|USD|GAMESTOP CORP-CLASS A|270986868|US36467W1099|36467W109|100|100|300|ISLAND|300|...
+```
+
 **Compressed deltas** (98% space savings):
 ```
 s3://your-bucket/ibkr/borrow/
 ├── 2026-01-16/
-│   ├── usa-20260116_093000.txt.gz        # Hourly baseline
-│   ├── usa-20260116_094500.xdelta        # Delta vs baseline
-│   ├── usa-20260116_100000.xdelta
+│   ├── usa-20260116_093000.txt.gz                      # Borrow baseline
+│   ├── usa-20260116_094500.xdelta                      # Borrow delta
+│   ├── stockmargin_final_dtls.IBLLC-US-093000.dat.gz  # Margin baseline
+│   ├── stockmargin_final_dtls.IBLLC-US-094500.xdelta  # Margin delta
 │   └── ...
-```
-
-**Reconstructed CSV format:**
-```csv
-#SYM|CUR|NAME|CON|ISIN|REBATERATE|FEERATE|AVAILABLE|FIGI|
-GME|USD|GAMESTOP CORP-CLASS A|270986868|US36467W1099|0.25|8.75|50000|BBG000BB5BF6|
 ```
 
 ## Documentation
@@ -183,4 +197,4 @@ Apache License 2.0 - Free for commercial and personal use.
 
 ---
 
-**Cost:** $0.15/month | **Coverage:** 17,000+ stocks | **Frequency:** Every 15 minutes
+**Markets:** 18 borrow + 8 margin | **Cost:** ~$0.20/month | **Frequency:** Every 15 minutes
