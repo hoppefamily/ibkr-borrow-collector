@@ -458,7 +458,17 @@ def process_file(
     # Generate timestamped filename
     current_time = datetime.utcnow()
     timestamp = current_time.strftime('%Y%m%d_%H%M%S')
-    base_name = filename.rsplit('.', 1)[0]  # Remove .txt extension
+    
+    # Handle different file extensions (.txt or .dat)
+    if filename.endswith('.txt'):
+        base_name = filename.rsplit('.', 1)[0]  # Remove .txt extension
+        file_extension = 'txt'
+    elif filename.endswith('.dat'):
+        base_name = filename.rsplit('.', 1)[0]  # Remove .dat extension
+        file_extension = 'dat'
+    else:
+        base_name = filename
+        file_extension = 'txt'
 
     # Decide whether to create baseline or delta
     xdelta_available = XDeltaCompressor.is_available()
@@ -473,7 +483,7 @@ def process_file(
         # Create full baseline snapshot
         reason = "scheduled baseline" if is_scheduled_baseline else "delta unavailable" if not xdelta_available else "delta disabled"
         logger.info(f"Creating baseline snapshot for {filename} (reason: {reason})")
-        timestamped_name = f"{base_name}-{timestamp}.txt.gz"
+        timestamped_name = f"{base_name}-{timestamp}.{file_extension}.gz"
         s3_key = f"{s3_prefix}/{timestamped_name}"
 
         # Compress
@@ -521,11 +531,11 @@ def process_file(
         logger.info(f"Using {source_type} as source: {source_s3_key}")
 
         # Download and reconstruct the source file
-        source_local = os.path.join(temp_dir, f"{base_name}_source.txt")
+        source_local = os.path.join(temp_dir, f"{base_name}_source.{file_extension}")
 
         if source_type == 'baseline':
             # Download and decompress baseline
-            source_local_gz = os.path.join(temp_dir, f"{base_name}_source.txt.gz")
+            source_local_gz = os.path.join(temp_dir, f"{base_name}_source.{file_extension}.gz")
             if not s3.download_file(source_s3_key, source_local_gz, use_cache=True, cache_dir=cache_dir):
                 logger.error("Failed to download source baseline, falling back to full snapshot")
                 return process_file(ftp, s3, collector_logger, filename, file_type,
@@ -547,8 +557,8 @@ def process_file(
                                   s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, cache_dir=cache_dir)
 
             baseline_s3_key, _ = latest_baseline
-            baseline_local_gz = os.path.join(temp_dir, f"{base_name}_baseline.txt.gz")
-            baseline_local = os.path.join(temp_dir, f"{base_name}_baseline.txt")
+            baseline_local_gz = os.path.join(temp_dir, f"{base_name}_baseline.{file_extension}.gz")
+            baseline_local = os.path.join(temp_dir, f"{base_name}_baseline.{file_extension}")
 
             if not s3.download_file(baseline_s3_key, baseline_local_gz, use_cache=True, cache_dir=cache_dir):
                 logger.error("Failed to download baseline for reconstruction")
@@ -665,7 +675,7 @@ def main():
     # Setup cache directory
     cache_dir = args.cache_dir if not args.dry_run else None
 
-    # Borrow files to collect
+    # Borrow rate files to collect (.txt files)
     borrow_files = [
         'usa.txt',
         'british.txt',
@@ -673,7 +683,30 @@ def main():
         'swiss.txt',
         'italy.txt',
         'japan.txt',
-        'hongkong.txt'
+        'hongkong.txt',
+        'australia.txt',
+        'austria.txt',
+        'belgium.txt',
+        'canada.txt',
+        'dutch.txt',
+        'france.txt',
+        'mexico.txt',
+        'spain.txt',
+        'swedish.txt',
+        'singapore.txt',
+        'india.txt'
+    ]
+
+    # Margin requirement files to collect (.dat files)
+    margin_files = [
+        'stockmargin_final_dtls.IBLLC-US.dat',
+        'stockmargin_final_dtls.IB-UKL.dat',
+        'stockmargin_final_dtls.IB-AU.dat',
+        'stockmargin_final_dtls.IB-CAN.dat',
+        'stockmargin_final_dtls.IB-HK.dat',
+        'stockmargin_final_dtls.IB-JP.dat',
+        'stockmargin_final_dtls.IB-SG.dat',
+        'stockmargin_final_dtls.IB-IN.dat'
     ]
 
     temp_dir = tempfile.mkdtemp(prefix='ibkr_ftp_')
@@ -691,10 +724,10 @@ def main():
         # Initialize S3 uploader (unless dry run)
         s3 = None if args.dry_run else S3Uploader(args.s3_bucket)
 
-        # Process borrow files
+        # Process borrow rate files (.txt)
         for filename in borrow_files:
             logger.info(f"\n{'='*60}")
-            logger.info(f"Processing: {filename}")
+            logger.info(f"Processing borrow rates: {filename}")
             logger.info(f"{'='*60}")
 
             if args.dry_run:
@@ -711,6 +744,29 @@ def main():
                 process_file(
                     ftp, s3, collector_logger,
                     filename, 'borrow', s3_prefix, temp_dir,
+                    cache_dir=cache_dir
+                )
+
+        # Process margin requirement files (.dat)
+        for filename in margin_files:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Processing margin requirements: {filename}")
+            logger.info(f"{'='*60}")
+
+            if args.dry_run:
+                # Just download and verify
+                local_file = os.path.join(temp_dir, filename)
+                local_checksum = os.path.join(temp_dir, f"{filename}.md5")
+
+                if ftp.download_file(filename, local_file):
+                    if ftp.download_file(f"{filename}.md5", local_checksum):
+                        MD5Verifier.verify(local_file, local_checksum)
+                    logger.info("✓ Dry run - skipping upload")
+            else:
+                s3_prefix = f"{args.s3_prefix}/{date_str}"
+                process_file(
+                    ftp, s3, collector_logger,
+                    filename, 'margin', s3_prefix, temp_dir,
                     cache_dir=cache_dir
                 )
 
