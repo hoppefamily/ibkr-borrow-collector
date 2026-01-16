@@ -257,9 +257,10 @@ Resources:
         - Key: Application
           Value: IBKR-Borrow-Collector
 
-  # Secrets Manager secret for storing access keys (optional)
+  # Secrets Manager secret for storing access keys (legacy method only)
   GitHubActionsCredentials:
     Type: AWS::SecretsManager::Secret
+    Condition: UseAccessKeys
     Properties:
       Name: !Sub '${AWS::StackName}/github-actions-credentials'
       Description: 'AWS credentials for GitHub Actions IBKR borrow collector'
