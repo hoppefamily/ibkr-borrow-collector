@@ -115,11 +115,17 @@ gh workflow run collect.yml
 ### 6. Verify Data Collection
 
 ```bash
+# Set S3_BUCKET variable from CloudFormation output
+export S3_BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name ibkr-borrow-collector \
+  --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' \
+  --output text)
+
 # List collected data
 aws s3 ls s3://$S3_BUCKET/ibkr/borrow/ --recursive --human-readable
 
-# Download a sample file
-aws s3 cp s3://$S3_BUCKET/ibkr/borrow/$(date +%Y-%m-%d)/usa-latest.txt.gz - | gunzip | head -20
+# Download a sample file (using timestamped filename)
+aws s3 ls s3://$S3_BUCKET/ibkr/borrow/$(date +%Y-%m-%d)/ | tail -1 | awk '{print $4}' | xargs -I {} aws s3 cp s3://$S3_BUCKET/ibkr/borrow/$(date +%Y-%m-%d)/{} - | gunzip | head -20
 ```
 
 ## CloudFormation Parameters
