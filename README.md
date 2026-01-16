@@ -23,12 +23,11 @@ Automated collector for Interactive Brokers short borrow rates with **98% delta 
 ### 1. Deploy Infrastructure (AWS CloudFormation)
 
 ```bash
-# Deploy S3 bucket and IAM resources with OIDC authentication (recommended)
+# Deploy S3 bucket and IAM resources with OIDC authentication
 aws cloudformation create-stack \
   --stack-name ibkr-borrow-collector \
   --template-body file://cloudformation-template.yaml \
   --parameters \
-    ParameterKey=UseOIDC,ParameterValue=true \
     ParameterKey=GitHubRepository,ParameterValue=YOUR_USERNAME/ibkr-borrow-collector \
   --capabilities CAPABILITY_NAMED_IAM
 
@@ -36,7 +35,7 @@ aws cloudformation create-stack \
 aws cloudformation wait stack-create-complete \
   --stack-name ibkr-borrow-collector
 
-# Get role ARN and bucket name (for OIDC)
+# Get role ARN and bucket name
 aws cloudformation describe-stacks \
   --stack-name ibkr-borrow-collector \
   --query 'Stacks[0].Outputs[?OutputKey==`GitHubActionsRoleArn` || OutputKey==`BucketName`]'
@@ -49,19 +48,18 @@ aws cloudformation describe-stacks \
 
 ✅ **No access keys needed!** GitHub Actions authenticates via OIDC.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions and legacy access key method.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions.
 
-### 2. Docker (Recommended)
+### 2. Docker (Local Testing)
 
 ```bash
 # Build the container
 docker build -t ibkr-collector .
 
-# Run collector (requires AWS credentials)
+# Run collector (uses AWS credentials from environment or ~/.aws/credentials)
 docker run --rm \
-  -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
-  -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
-  -e AWS_DEFAULT_REGION=us-east-1 \
+  -v ~/.aws:/home/collector/.aws:ro \
+  -e AWS_REGION=us-east-1 \
   ibkr-collector \
   --s3-bucket your-bucket-name \
   --s3-prefix ibkr/borrow

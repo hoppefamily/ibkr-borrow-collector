@@ -9,14 +9,6 @@ Parameters:
     AllowedPattern: '^[a-z0-9.-]*$'
     ConstraintDescription: 'Bucket name must contain only lowercase letters, numbers, dots, and hyphens'
 
-  UseOIDC:
-    Type: String
-    Description: 'Use OIDC for GitHub Actions authentication (recommended) instead of access keys'
-    Default: 'true'
-    AllowedValues:
-      - 'true'
-      - 'false'
-
   CreateOIDCProvider:
     Type: String
     Description: 'Create new OIDC provider (set to false if already exists in your AWS account)'
@@ -27,7 +19,7 @@ Parameters:
 
   GitHubRepository:
     Type: String
-    Description: 'GitHub repository in format owner/repo (required if UseOIDC is true)'
+    Description: 'GitHub repository in format owner/repo (required for OIDC trust policy)'
     Default: 'hoppefamily/ibkr-borrow-collector'
 
   DataRetentionDays:
@@ -48,11 +40,7 @@ Conditions:
   HasBucketName: !Not [!Equals [!Ref BucketName, '']]
   EnableExpiration: !Not [!Equals [!Ref DataRetentionDays, 0]]
   EnableGlacierTransition: !Not [!Equals [!Ref TransitionToGlacierDays, 0]]
-  UseOIDCAuth: !Equals [!Ref UseOIDC, 'true']
-  UseAccessKeys: !Not [!Condition UseOIDCAuth]
-  ShouldCreateOIDCProvider: !And
-    - !Condition UseOIDCAuth
-    - !Equals [!Ref CreateOIDCProvider, 'true']
+  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, 'true']
 
 Resources:
   # S3 Bucket for storing borrow rate data
