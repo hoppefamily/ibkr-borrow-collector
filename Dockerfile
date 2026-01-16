@@ -4,7 +4,8 @@ FROM python:3.11-alpine
 RUN apk add --no-cache xdelta3 ca-certificates \
     && rm -rf /var/cache/apk/* \
     && adduser -D -u 1000 collector \
-    && mkdir -p /home/collector/.ibkr-baselines
+    && mkdir -p /home/collector/.ibkr-baselines \
+    && chown -R collector:collector /home/collector
 
 # Set working directory
 WORKDIR /app
