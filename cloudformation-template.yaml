@@ -289,21 +289,25 @@ Outputs:
       Name: !Sub '${AWS::StackName}-BucketArn'
 
   GitHubActionsUserArn:
-    Description: 'ARN of the IAM user for GitHub Actions'
+    Description: 'ARN of the IAM user for GitHub Actions (legacy method only)'
+    Condition: UseAccessKeys
     Value: !GetAtt GitHubActionsUser.Arn
     Export:
       Name: !Sub '${AWS::StackName}-GitHubActionsUserArn'
 
   AccessKeyId:
-    Description: 'AWS Access Key ID for GitHub Actions (store in GitHub Secrets)'
+    Description: 'AWS Access Key ID for GitHub Actions (legacy method only)'
+    Condition: UseAccessKeys
     Value: !Ref GitHubActionsAccessKey
 
   SecretAccessKey:
-    Description: 'AWS Secret Access Key for GitHub Actions (store in GitHub Secrets)'
+    Description: 'AWS Secret Access Key for GitHub Actions (legacy method only) - SAVE THIS NOW!'
+    Condition: UseAccessKeys
     Value: !GetAtt GitHubActionsAccessKey.SecretAccessKey
 
   CredentialsSecretArn:
-    Description: 'ARN of Secrets Manager secret containing credentials'
+    Description: 'ARN of Secrets Manager secret containing credentials (legacy method only)'
+    Condition: UseAccessKeys
     Value: !Ref GitHubActionsCredentials
     Export:
       Name: !Sub '${AWS::StackName}-CredentialsSecretArn'
