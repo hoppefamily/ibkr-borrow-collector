@@ -20,7 +20,28 @@ Automated collector for Interactive Brokers short borrow rates with **98% delta 
 
 ## Quick Start
 
-### Docker (Recommended)
+### 1. Deploy Infrastructure (AWS CloudFormation)
+
+```bash
+# Deploy S3 bucket and IAM resources
+aws cloudformation create-stack \
+  --stack-name ibkr-borrow-collector \
+  --template-body file://cloudformation-template.yaml \
+  --capabilities CAPABILITY_NAMED_IAM
+
+# Wait for completion
+aws cloudformation wait stack-create-complete \
+  --stack-name ibkr-borrow-collector
+
+# Get credentials and bucket name
+aws cloudformation describe-stacks \
+  --stack-name ibkr-borrow-collector \
+  --query 'Stacks[0].Outputs'
+```
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions.
+
+### 2. Docker (Recommended)
 
 ```bash
 # Build the container
@@ -146,11 +167,31 @@ Each uploaded file includes metadata for reconstruction:
 
 ## Deployment Options
 
+### CloudFormation (Recommended)
+
+Use the included [cloudformation-template.yaml](cloudformation-template.yaml) to deploy complete infrastructure:
+
+```bash
+aws cloudformation create-stack \
+  --stack-name ibkr-borrow-collector \
+  --template-body file://cloudformation-template.yaml \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+**Includes**:
+- S3 bucket with encryption, versioning, lifecycle policies
+- IAM user and access keys for GitHub Actions
+- IAM roles for Lambda and ECS deployments
+- Intelligent-Tiering and Glacier transitions
+- Secrets Manager for credential storage
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for complete guide.
+
 ### GitHub Actions (Free Tier)
 
 Uses the included workflow at [.github/workflows/collect.yml](.github/workflows/collect.yml).
 
-**Required Secrets**:
+**Required Secrets** (automatically configured by CloudFormation):
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 - `AWS_REGION` (e.g., us-east-1)
