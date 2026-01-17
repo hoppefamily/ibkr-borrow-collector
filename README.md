@@ -546,7 +546,6 @@ See **[market-state-detector](https://github.com/hoppefamily/market-state-detect
 
 - 📊 **[market-flow-dashboard](https://github.com/hoppefamily/market-flow-dashboard)** - Real-time visualization
 - 🎯 **[market-state-detector](https://github.com/hoppefamily/market-state-detector)** - Regime detection
-- 📈 **[trading](https://github.com/hoppefamily/trading)** - Trading strategy framework
 
 ## Contributing
 
