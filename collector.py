@@ -18,7 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 try:
@@ -58,15 +58,20 @@ class FTPDownloader:
             raise
 
     def download_file(self, remote_path: str, local_path: str) -> bool:
-        """Download a file from FTP server."""
+        """Download a file from FTP server atomically."""
         if not self.ftp:
             raise RuntimeError("Not connected to FTP server. Call connect() first.")
 
         try:
+            # Download to temporary .part file first
+            part_path = f"{local_path}.part"
             logger.info(f"Downloading {remote_path} -> {local_path}")
-            with open(local_path, 'wb') as f:
+            with open(part_path, 'wb') as f:
                 self.ftp.retrbinary(f'RETR {remote_path}', f.write)
 
+            # Atomic rename once complete
+            os.replace(part_path, local_path)
+            
             size = os.path.getsize(local_path)
             logger.info(f"Downloaded {size:,} bytes")
             return True
@@ -229,12 +234,14 @@ class S3Uploader:
                 return None
 
     def list_objects(self, prefix: str) -> List[str]:
-        """List objects under a prefix."""
+        """List objects under a prefix with pagination support."""
         try:
-            response = self.s3_client.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
-            if 'Contents' not in response:
-                return []
-            return [obj['Key'] for obj in response['Contents']]
+            keys = []
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                for obj in page.get('Contents', []):
+                    keys.append(obj['Key'])
+            return keys
         except ClientError as e:
             logger.warning(f"Error listing S3 objects under {prefix}: {e}")
             return []
@@ -297,7 +304,7 @@ class CollectionLogger:
     """Track collection statistics and create JSON logs."""
 
     def __init__(self):
-        self.start_time = datetime.utcnow()
+        self.start_time = datetime.now(timezone.utc)
         self.files: List[Dict] = []
         self.stats = {
             'processed': 0,
@@ -313,7 +320,7 @@ class CollectionLogger:
         file_entry = {
             'filename': filename,
             'status': status,
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         file_entry.update(kwargs)
         self.files.append(file_entry)
@@ -328,7 +335,7 @@ class CollectionLogger:
 
     def write_json_log(self, output_file: Optional[str] = None) -> str:
         """Write structured JSON log."""
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         duration = (end_time - self.start_time).total_seconds()
 
         log_data = {
@@ -348,45 +355,11 @@ class CollectionLogger:
         return json.dumps(log_data, indent=2)
 
 
-def find_latest_snapshot(s3: S3Uploader, s3_prefix: str, filename_base: str) -> Optional[Tuple[str, str, str]]:
-    """Find the most recent snapshot (baseline or delta) for chained delta compression.
-
-    Returns:
-        Tuple of (s3_key, timestamp, snapshot_type) or None if no snapshot found
-        snapshot_type is 'baseline' or 'delta'
-    """
-    # List all files for this market in today's folder
-    all_files = s3.list_objects(s3_prefix)
-
-    # Find all snapshots (baselines and deltas)
-    snapshots = []
-    for s3_key in all_files:
-        if filename_base in s3_key:
-            # Extract timestamp from filename like usa-20260116_120530.txt.gz or usa-20260116_120530.xdelta
-            try:
-                parts = s3_key.split('/')[-1].split('-')
-                if len(parts) >= 2:
-                    if s3_key.endswith('.gz') and '.xdelta' not in s3_key:
-                        # Baseline
-                        timestamp = parts[1].split('.')[0]
-                        snapshots.append((s3_key, timestamp, 'baseline'))
-                    elif s3_key.endswith('.xdelta'):
-                        # Delta
-                        timestamp = parts[1].split('.')[0]
-                        snapshots.append((s3_key, timestamp, 'delta'))
-            except Exception:
-                continue
-
-    if not snapshots:
-        return None
-
-    # Return the most recent snapshot (baseline or delta)
-    snapshots.sort(key=lambda x: x[1], reverse=True)
-    return snapshots[0]
-
-
 def find_latest_baseline(s3: S3Uploader, s3_prefix: str, filename_base: str) -> Optional[Tuple[str, str]]:
-    """Find the most recent baseline file (for fallback reconstruction).
+    """Find the most recent baseline file for delta compression.
+    
+    Note: Simplified to baseline → current only (no chained deltas).
+    This makes reconstruction trivial and more reliable.
 
     Returns:
         Tuple of (s3_key, timestamp) or None if no baseline found
@@ -431,7 +404,8 @@ def process_file(
     temp_dir: str,
     use_delta: bool = True,
     force_upload: bool = False,
-    cache_dir: Optional[str] = None
+    cache_dir: Optional[str] = None,
+    xdelta_available: bool = True
 ) -> bool:
     """Process a single file: download, verify, and upload with delta compression."""
 
@@ -456,7 +430,7 @@ def process_file(
     collector_logger.stats['total_bytes_downloaded'] += original_size
 
     # Generate timestamped filename
-    current_time = datetime.utcnow()
+    current_time = datetime.now(timezone.utc)
     timestamp = current_time.strftime('%Y%m%d_%H%M%S')
 
     # Handle different file extensions (.txt or .dat)
@@ -471,13 +445,8 @@ def process_file(
         file_extension = 'txt'
 
     # Decide whether to create baseline or delta
-    xdelta_available = XDeltaCompressor.is_available()
     is_scheduled_baseline = should_create_baseline(current_time)
     create_baseline = is_scheduled_baseline or not use_delta or not xdelta_available
-
-    # Warn if xdelta3 is not available
-    if not xdelta_available:
-        logger.warning("⚠️  xdelta3 is not available - falling back to baseline creation")
 
     if create_baseline:
         # Create full baseline snapshot
@@ -517,78 +486,33 @@ def process_file(
             return False
 
     else:
-        # Create chained delta from most recent snapshot (baseline or delta)
-        logger.info(f"Creating chained delta snapshot for {filename}")
+        # Create delta from most recent baseline (simplified - no chained deltas)
+        logger.info(f"Creating delta snapshot for {filename}")
 
-        # Find previous snapshot (could be baseline or delta)
-        latest_snapshot = find_latest_snapshot(s3, s3_prefix, base_name)
-        if not latest_snapshot:
-            logger.warning(f"No previous snapshot found for {filename}, creating baseline instead")
+        # Find previous baseline
+        latest_baseline = find_latest_baseline(s3, s3_prefix, base_name)
+        if not latest_baseline:
+            logger.warning(f"No previous baseline found for {filename}, creating baseline instead")
             return process_file(ftp, s3, collector_logger, filename, file_type,
-                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, cache_dir=cache_dir)
+                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, 
+                              xdelta_available=xdelta_available, cache_dir=cache_dir)
 
-        source_s3_key, source_timestamp, source_type = latest_snapshot
-        logger.info(f"Using {source_type} as source: {source_s3_key}")
+        source_s3_key, source_timestamp = latest_baseline
+        logger.info(f"Using baseline as source: {source_s3_key}")
 
-        # Download and reconstruct the source file
+        # Download and decompress baseline
         source_local = os.path.join(temp_dir, f"{base_name}_source.{file_extension}")
+        source_local_gz = os.path.join(temp_dir, f"{base_name}_source.{file_extension}.gz")
+        
+        if not s3.download_file(source_s3_key, source_local_gz, use_cache=True, cache_dir=cache_dir):
+            logger.error("Failed to download source baseline, falling back to full snapshot")
+            return process_file(ftp, s3, collector_logger, filename, file_type,
+                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, 
+                              xdelta_available=xdelta_available, cache_dir=cache_dir)
 
-        if source_type == 'baseline':
-            # Download and decompress baseline
-            source_local_gz = os.path.join(temp_dir, f"{base_name}_source.{file_extension}.gz")
-            if not s3.download_file(source_s3_key, source_local_gz, use_cache=True, cache_dir=cache_dir):
-                logger.error("Failed to download source baseline, falling back to full snapshot")
-                return process_file(ftp, s3, collector_logger, filename, file_type,
-                                  s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, cache_dir=cache_dir)
-
-            with gzip.open(source_local_gz, 'rb') as f_in:
-                with open(source_local, 'wb') as f_out:
-                    f_out.write(f_in.read())
-
-        else:  # source_type == 'delta'
-            # Need to reconstruct from baseline + delta chain
-            logger.info("Reconstructing source from delta chain...")
-
-            # Find the baseline for this delta
-            latest_baseline = find_latest_baseline(s3, s3_prefix, base_name)
-            if not latest_baseline:
-                logger.error("No baseline found for delta reconstruction, creating new baseline")
-                return process_file(ftp, s3, collector_logger, filename, file_type,
-                                  s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, cache_dir=cache_dir)
-
-            baseline_s3_key, _ = latest_baseline
-            baseline_local_gz = os.path.join(temp_dir, f"{base_name}_baseline.{file_extension}.gz")
-            baseline_local = os.path.join(temp_dir, f"{base_name}_baseline.{file_extension}")
-
-            if not s3.download_file(baseline_s3_key, baseline_local_gz, use_cache=True, cache_dir=cache_dir):
-                logger.error("Failed to download baseline for reconstruction")
-                return process_file(ftp, s3, collector_logger, filename, file_type,
-                                  s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, cache_dir=cache_dir)
-
-            with gzip.open(baseline_local_gz, 'rb') as f_in:
-                with open(baseline_local, 'wb') as f_out:
-                    f_out.write(f_in.read())
-
-            # Download the source delta
-            source_delta_local = os.path.join(temp_dir, f"{base_name}_source.xdelta")
-            if not s3.download_file(source_s3_key, source_delta_local, use_cache=False):
-                logger.error("Failed to download source delta, falling back to full snapshot")
-                return process_file(ftp, s3, collector_logger, filename, file_type,
-                                  s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, cache_dir=cache_dir)
-
-            # Apply delta to reconstruct source
-            try:
-                subprocess.run(
-                    ['xdelta3', '-d', '-s', baseline_local, source_delta_local, source_local],
-                    capture_output=True,
-                    check=True
-                )
-                logger.info("Source reconstructed successfully")
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Delta reconstruction failed: {e.stderr.decode() if e.stderr else str(e)}")
-                logger.error("Falling back to full snapshot")
-                return process_file(ftp, s3, collector_logger, filename, file_type,
-                                  s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, cache_dir=cache_dir)
+        with gzip.open(source_local_gz, 'rb') as f_in:
+            with open(source_local, 'wb') as f_out:
+                f_out.write(f_in.read())
 
         # Check if content changed
         source_md5 = MD5Verifier.calculate_md5(source_local)
@@ -603,23 +527,24 @@ def process_file(
             )
             return True
 
-        # Create delta from source to current
+        # Create delta from baseline to current
         delta_file = os.path.join(temp_dir, f"{base_name}-{timestamp}.xdelta")
         if not XDeltaCompressor.create_delta(source_local, local_file, delta_file):
             logger.error("Delta creation failed, falling back to full snapshot")
             return process_file(ftp, s3, collector_logger, filename, file_type,
-                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, cache_dir=cache_dir)
+                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, 
+                              xdelta_available=xdelta_available, cache_dir=cache_dir)
 
         delta_size = os.path.getsize(delta_file)
         collector_logger.stats['total_bytes_uploaded'] += delta_size
 
-        # Upload delta with chain metadata
+        # Upload delta with metadata (always baseline as source)
         delta_s3_key = f"{s3_prefix}/{base_name}-{timestamp}.xdelta"
         metadata = {
             'original-md5': content_md5,
             'source-md5': source_md5,
             'source-key': source_s3_key,
-            'source-type': source_type,
+            'source-type': 'baseline',
             'file-type': file_type,
             'snapshot-type': 'delta',
             'collection-time': current_time.isoformat(),
@@ -632,7 +557,7 @@ def process_file(
                 filename,
                 'uploaded',
                 snapshot_type='delta',
-                source_type=source_type,
+                source_type='baseline',
                 size_original=original_size,
                 size_delta=delta_size,
                 md5=content_md5,
@@ -663,14 +588,22 @@ def main():
                         help='Test FTP connection only')
     parser.add_argument('--log-json', action='store_true',
                         help='Output structured JSON log')
+    parser.add_argument('--force-upload', action='store_true',
+                        help='Force upload even if content unchanged')
     parser.add_argument('--cache-dir', default=os.path.expanduser('~/.ibkr-baselines'),
                         help='Directory for caching baseline snapshots')
 
     args = parser.parse_args()
 
     # Initialize
-    date_str = datetime.utcnow().strftime('%Y-%m-%d')
+    date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     collector_logger = CollectionLogger()
+
+    # Check xdelta3 availability once
+    xdelta_available = XDeltaCompressor.is_available()
+    if not xdelta_available:
+        logger.warning("⚠ xdelta3 not available - delta compression disabled (only baseline snapshots will be created)")
+        logger.warning("Install xdelta3: brew install xdelta (macOS) or apt-get install xdelta3 (Linux)")
 
     # Setup cache directory
     cache_dir = args.cache_dir if not args.dry_run else None
@@ -744,6 +677,8 @@ def main():
                 process_file(
                     ftp, s3, collector_logger,
                     filename, 'borrow', s3_prefix, temp_dir,
+                    force_upload=args.force_upload,
+                    xdelta_available=xdelta_available,
                     cache_dir=cache_dir
                 )
 
@@ -767,19 +702,21 @@ def main():
                 process_file(
                     ftp, s3, collector_logger,
                     filename, 'margin', s3_prefix, temp_dir,
+                    force_upload=args.force_upload,
+                    xdelta_available=xdelta_available,
                     cache_dir=cache_dir
                 )
 
         # Close FTP
         ftp.close()
 
-        # Check if xdelta3 was available during this run
-        xdelta_status = "✓ Available" if XDeltaCompressor.is_available() else "✗ Not Available"
+        # Xdelta3 status for logs
+        xdelta_status = "✓ Available" if xdelta_available else "✗ Not Available"
 
         # Write log
         if args.log_json:
             log_data = json.loads(collector_logger.write_json_log())
-            log_data['xdelta3_available'] = XDeltaCompressor.is_available()
+            log_data['xdelta3_available'] = xdelta_available
             print(json.dumps(log_data))
         else:
             logger.info(f"\n{'='*60}")
