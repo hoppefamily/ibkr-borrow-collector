@@ -1,9 +1,23 @@
 version: '3.8'
 
 services:
-  collector:
+  # Local collection mode: stores data in ./data/ directory
+  collector-local:
     build: .
-    container_name: ibkr-collector
+    container_name: ibkr-collector-local
+    command: >
+      --dry-run
+      --log-json
+    volumes:
+      - ./data:/tmp/ibkr-data
+      - baseline-cache:/home/collector/.ibkr-baselines
+    profiles:
+      - local
+
+  # AWS collection mode: uploads to S3
+  collector-aws:
+    build: .
+    container_name: ibkr-collector-aws
     environment:
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
@@ -15,6 +29,8 @@ services:
       --log-json
     volumes:
       - baseline-cache:/home/collector/.ibkr-baselines
+    profiles:
+      - aws
 
 volumes:
   baseline-cache:

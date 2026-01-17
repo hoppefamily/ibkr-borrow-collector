@@ -71,7 +71,7 @@ class FTPDownloader:
 
             # Atomic rename once complete
             os.replace(part_path, local_path)
-            
+
             size = os.path.getsize(local_path)
             logger.info(f"Downloaded {size:,} bytes")
             return True
@@ -357,7 +357,7 @@ class CollectionLogger:
 
 def find_latest_baseline(s3: S3Uploader, s3_prefix: str, filename_base: str) -> Optional[Tuple[str, str]]:
     """Find the most recent baseline file for delta compression.
-    
+
     Note: Simplified to baseline → current only (no chained deltas).
     This makes reconstruction trivial and more reliable.
 
@@ -494,7 +494,7 @@ def process_file(
         if not latest_baseline:
             logger.warning(f"No previous baseline found for {filename}, creating baseline instead")
             return process_file(ftp, s3, collector_logger, filename, file_type,
-                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, 
+                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload,
                               xdelta_available=xdelta_available, cache_dir=cache_dir)
 
         source_s3_key, source_timestamp = latest_baseline
@@ -503,11 +503,11 @@ def process_file(
         # Download and decompress baseline
         source_local = os.path.join(temp_dir, f"{base_name}_source.{file_extension}")
         source_local_gz = os.path.join(temp_dir, f"{base_name}_source.{file_extension}.gz")
-        
+
         if not s3.download_file(source_s3_key, source_local_gz, use_cache=True, cache_dir=cache_dir):
             logger.error("Failed to download source baseline, falling back to full snapshot")
             return process_file(ftp, s3, collector_logger, filename, file_type,
-                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, 
+                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload,
                               xdelta_available=xdelta_available, cache_dir=cache_dir)
 
         with gzip.open(source_local_gz, 'rb') as f_in:
@@ -532,7 +532,7 @@ def process_file(
         if not XDeltaCompressor.create_delta(source_local, local_file, delta_file):
             logger.error("Delta creation failed, falling back to full snapshot")
             return process_file(ftp, s3, collector_logger, filename, file_type,
-                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload, 
+                              s3_prefix, temp_dir, use_delta=False, force_upload=force_upload,
                               xdelta_available=xdelta_available, cache_dir=cache_dir)
 
         delta_size = os.path.getsize(delta_file)
