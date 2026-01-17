@@ -148,6 +148,30 @@ Add in **Settings → Secrets → Actions**:
 
 Enable GitHub Actions. Data collection starts automatically every 15 minutes during market hours.
 
+### Reconstruct Snapshots
+
+**Retrieve any snapshot from S3** (handles both baselines and deltas automatically):
+
+```bash
+# Reconstruct a specific snapshot
+python collector.py reconstruct \
+  --s3-bucket your-bucket \
+  --s3-key ibkr/borrow/2026-01-16/usa-20260116T093000Z.txt.gz \
+  --output usa-data.txt
+
+# Or reconstruct a delta (automatically fetches baseline)
+python collector.py reconstruct \
+  --s3-bucket your-bucket \
+  --s3-key ibkr/borrow/2026-01-16/usa-20260116T094500Z.xdelta \
+  --output usa-data.txt
+```
+
+**Features:**
+- Automatic baseline detection for deltas
+- MD5 verification of reconstructed files
+- Local baseline caching (speeds up multiple reconstructions)
+- Works with both borrow (.txt) and margin (.dat) files
+
 ## Use Cases
 
 ### 1. Short Squeeze Detection
@@ -500,7 +524,7 @@ margins = pd.read_csv('margin_requirements.csv')
 combined = fees.merge(margins, on=['symbol', 'timestamp'])
 
 # Alert: High margin (>100%) AND high fee (>5%) = extreme risk
-stressed = combined[(combined['ShortInitialMargin'] > 100) & 
+stressed = combined[(combined['ShortInitialMargin'] > 100) &
                     (combined['fee_rate'] > 5.0)]
 ```
 **Flow interpretation:**

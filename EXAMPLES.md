@@ -62,7 +62,38 @@ docker-compose up
 
 ## Data Reconstruction
 
-### Reconstruct from Baseline + Delta
+### Using the CLI (Recommended)
+
+**Reconstruct any snapshot** (baseline or delta):
+
+```bash
+# Reconstruct a baseline
+python collector.py reconstruct \
+  --s3-bucket my-bucket \
+  --s3-key ibkr/borrow/2026-01-16/usa-20260116T093000Z.txt.gz \
+  --output reconstructed.txt
+
+# Reconstruct a delta (automatically fetches and applies baseline)
+python collector.py reconstruct \
+  --s3-bucket my-bucket \
+  --s3-key ibkr/borrow/2026-01-16/usa-20260116T094500Z.xdelta \
+  --output reconstructed.txt
+
+# With custom cache directory
+python collector.py reconstruct \
+  --s3-bucket my-bucket \
+  --s3-key ibkr/borrow/2026-01-16/usa-20260116T121500Z.xdelta \
+  --output reconstructed.txt \
+  --cache-dir /tmp/baselines
+```
+
+**Features:**
+- Handles both baselines (.gz) and deltas (.xdelta) automatically
+- Reads S3 metadata to find source baseline for deltas
+- Verifies MD5 checksums after reconstruction
+- Caches baselines locally to speed up repeated reconstructions
+
+### Manual Reconstruction from Baseline + Delta
 
 ```python
 #!/usr/bin/env python3

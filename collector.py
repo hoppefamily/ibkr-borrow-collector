@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -570,15 +571,156 @@ def process_file(
             return False
 
 
+def reconstruct_snapshot(s3_bucket: str, s3_key: str, output_file: str, cache_dir: Optional[str] = None) -> bool:
+    """Reconstruct a snapshot from S3 (handling both baselines and deltas).
+
+    Args:
+        s3_bucket: S3 bucket name
+        s3_key: S3 key of the snapshot (baseline .gz or delta .xdelta)
+        output_file: Local path to write reconstructed file
+        cache_dir: Optional directory for caching baselines
+
+    Returns:
+        True if reconstruction successful, False otherwise
+    """
+    logger.info(f"Reconstructing {s3_key} to {output_file}")
+
+    s3 = S3Uploader(s3_bucket)
+    temp_dir = tempfile.mkdtemp(prefix='ibkr_reconstruct_')
+
+    try:
+        if s3_key.endswith('.txt.gz') or s3_key.endswith('.dat.gz'):
+            # Direct baseline - just decompress
+            logger.info("Snapshot is a baseline, decompressing...")
+            local_gz = os.path.join(temp_dir, 'snapshot.gz')
+
+            if not s3.download_file(s3_key, local_gz, use_cache=True, cache_dir=cache_dir):
+                logger.error(f"Failed to download baseline from {s3_key}")
+                return False
+
+            with gzip.open(local_gz, 'rb') as f_in:
+                with open(output_file, 'wb') as f_out:
+                    f_out.write(f_in.read())
+
+            logger.info(f"✓ Baseline decompressed to {output_file}")
+            return True
+
+        elif s3_key.endswith('.xdelta'):
+            # Delta - need to download baseline and reconstruct
+            logger.info("Snapshot is a delta, reconstructing from baseline...")
+
+            # Get metadata to find source baseline
+            metadata = s3.get_object_metadata(s3_key)
+            if not metadata or 'source-key' not in metadata:
+                logger.error(f"Delta {s3_key} missing source-key metadata")
+                return False
+
+            source_key = metadata['source-key']
+            logger.info(f"Source baseline: {source_key}")
+
+            # Download baseline
+            baseline_local_gz = os.path.join(temp_dir, 'baseline.gz')
+            baseline_local = os.path.join(temp_dir, 'baseline.txt')
+
+            if not s3.download_file(source_key, baseline_local_gz, use_cache=True, cache_dir=cache_dir):
+                logger.error(f"Failed to download baseline from {source_key}")
+                return False
+
+            with gzip.open(baseline_local_gz, 'rb') as f_in:
+                with open(baseline_local, 'wb') as f_out:
+                    f_out.write(f_in.read())
+
+            # Download delta
+            delta_local = os.path.join(temp_dir, 'delta.xdelta')
+            if not s3.download_file(s3_key, delta_local, use_cache=False):
+                logger.error(f"Failed to download delta from {s3_key}")
+                return False
+
+            # Apply delta
+            if not XDeltaCompressor.is_available():
+                logger.error("xdelta3 not available - cannot reconstruct delta")
+                return False
+
+            try:
+                subprocess.run(
+                    ['xdelta3', '-d', '-s', baseline_local, delta_local, output_file],
+                    capture_output=True,
+                    check=True
+                )
+                logger.info(f"✓ Delta reconstructed to {output_file}")
+
+                # Verify MD5 if available
+                if 'original-md5' in metadata:
+                    reconstructed_md5 = MD5Verifier.calculate_md5(output_file)
+                    expected_md5 = metadata['original-md5']
+                    if reconstructed_md5 == expected_md5:
+                        logger.info(f"✓ MD5 verified: {reconstructed_md5}")
+                    else:
+                        logger.error(f"✗ MD5 mismatch: expected {expected_md5}, got {reconstructed_md5}")
+                        return False
+
+                return True
+
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Delta reconstruction failed: {e.stderr.decode() if e.stderr else str(e)}")
+                return False
+
+        else:
+            logger.error(f"Unknown snapshot type: {s3_key}")
+            return False
+
+    finally:
+        # Cleanup temp directory
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description='IBKR FTP Data Collector')
+    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+
+    # Collect subcommand (default behavior)
+    collect_parser = subparsers.add_parser('collect', help='Collect data from FTP and upload to S3')
+    collect_parser.add_argument('--ftp-host', default='ftp2.interactivebrokers.com',
+                        help='FTP server hostname')
+    collect_parser.add_argument('--ftp-user', default=os.getenv('FTP_USER', 'shortstock'),
+                        help='FTP username (default: shortstock for public access)')
+    collect_parser.add_argument('--ftp-pass', default=os.getenv('FTP_PASS', ''),
+                        help='FTP password (default: empty for public access)')
+    collect_parser.add_argument('--s3-bucket', required=True,
+                        help='S3 bucket name')
+    collect_parser.add_argument('--s3-prefix', default='ibkr/borrow',
+                        help='S3 prefix for borrow files')
+    collect_parser.add_argument('--dry-run', action='store_true',
+                        help='Download but do not upload to S3')
+    collect_parser.add_argument('--test-connection', action='store_true',
+                        help='Test FTP connection only')
+    collect_parser.add_argument('--log-json', action='store_true',
+                        help='Output structured JSON log')
+    collect_parser.add_argument('--force-upload', action='store_true',
+                        help='Force upload even if content unchanged')
+    collect_parser.add_argument('--cache-dir', default=os.path.expanduser('~/.ibkr-baselines'),
+                        help='Directory for caching baseline snapshots')
+
+    # Reconstruct subcommand
+    reconstruct_parser = subparsers.add_parser('reconstruct', help='Reconstruct a snapshot from S3')
+    reconstruct_parser.add_argument('--s3-bucket', required=True,
+                        help='S3 bucket name')
+    reconstruct_parser.add_argument('--s3-key', required=True,
+                        help='S3 key of snapshot to reconstruct')
+    reconstruct_parser.add_argument('--output', required=True,
+                        help='Output file path')
+    reconstruct_parser.add_argument('--cache-dir', default=os.path.expanduser('~/.ibkr-baselines'),
+                        help='Directory for caching baselines')
+
+    # For backwards compatibility, also support old-style args (no subcommand)
     parser.add_argument('--ftp-host', default='ftp2.interactivebrokers.com',
                         help='FTP server hostname')
     parser.add_argument('--ftp-user', default=os.getenv('FTP_USER', 'shortstock'),
                         help='FTP username (default: shortstock for public access)')
     parser.add_argument('--ftp-pass', default=os.getenv('FTP_PASS', ''),
                         help='FTP password (default: empty for public access)')
-    parser.add_argument('--s3-bucket', required=True,
+    parser.add_argument('--s3-bucket',
                         help='S3 bucket name')
     parser.add_argument('--s3-prefix', default='ibkr/borrow',
                         help='S3 prefix for borrow files')
@@ -594,6 +736,20 @@ def main():
                         help='Directory for caching baseline snapshots')
 
     args = parser.parse_args()
+
+    # Handle reconstruct subcommand
+    if args.command == 'reconstruct':
+        success = reconstruct_snapshot(
+            args.s3_bucket,
+            args.s3_key,
+            args.output,
+            args.cache_dir
+        )
+        return 0 if success else 1
+
+    # Default: collect mode (either via 'collect' subcommand or legacy args)
+    if not args.s3_bucket and not args.dry_run and not args.test_connection:
+        parser.error("--s3-bucket is required unless using --dry-run or --test-connection")
 
     # Initialize
     date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
