@@ -172,6 +172,76 @@ python collector.py reconstruct \
 - Local baseline caching (speeds up multiple reconstructions)
 - Works with both borrow (.txt) and margin (.dat) files
 
+## Consumer Access (For Other Projects)
+
+If you want to **read** data from the S3 bucket in your own projects, you need proper IAM permissions.
+
+### Required IAM Permissions
+
+Your IAM role/user needs:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::ibkr-borrow-collector-borrowdatabucket-*",
+        "arn:aws:s3:::ibkr-borrow-collector-borrowdatabucket-*/*"
+      ]
+    }
+  ]
+}
+```
+
+**For GitHub Actions:** Use OIDC authentication (configured in CloudFormation template) instead of long-lived credentials.
+
+### Consumer Requirements
+
+**Python:**
+```bash
+pip install boto3>=1.26.0
+```
+
+**System:**
+- `xdelta3` (for delta reconstruction):
+  - **macOS**: `brew install xdelta`
+  - **Ubuntu/Debian**: `apt-get install xdelta3`
+
+### Example: Reading Data in Python
+
+```python
+import boto3
+import gzip
+
+# List available snapshots
+s3 = boto3.client('s3')
+response = s3.list_objects_v2(
+    Bucket='ibkr-borrow-collector-borrowdatabucket-u0yupnyt837q',
+    Prefix='ibkr/borrow/2026-01-16/usa-'
+)
+
+# Download and read a baseline
+key = 'ibkr/borrow/2026-01-16/usa-20260116T120000Z.txt.gz'
+obj = s3.get_object(Bucket='ibkr-borrow-collector-borrowdatabucket-u0yupnyt837q', Key=key)
+
+with gzip.open(obj['Body'], 'rt') as f:
+    # Parse pipe-delimited format
+    for line in f:
+        if line.startswith('#'):
+            continue  # Skip header
+        fields = line.strip().split('|')
+        symbol, currency, fee_rate = fields[0], fields[1], fields[6]
+        print(f"{symbol}: {fee_rate}% borrow fee")
+```
+
+**Note:** Delta files (`.xdelta`) require reconstruction using `xdelta3`. See [EXAMPLES.md](EXAMPLES.md) for complete delta reconstruction code.
+
 ## Use Cases
 
 ### 1. Short Squeeze Detection
