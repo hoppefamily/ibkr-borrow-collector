@@ -365,7 +365,7 @@ All snapshots include schema version in S3 metadata:
 | `ISIN` | string | ISO 6166 | International security ID | `US36467W1099` |
 | `REBATERATE` | decimal | % per annum | Cash collateral rebate | `0.25` |
 | `FEERATE` | decimal | % per annum | Borrow cost | `8.75` |
-| `AVAILABLE` | integer | shares | Available shares | `50000` |
+| `AVAILABLE` | integer/string | shares | Available shares | `50000` or `>10000000` |
 | `FIGI` | string | OpenFIGI | Financial instrument ID | `BBG000BB5BF6` |
 
 **Important:**
@@ -373,6 +373,7 @@ All snapshots include schema version in S3 metadata:
 - Daily cost = `FEERATE / 100 / 365 * position_value`
 - Empty fields represented as empty string between delimiters: `||`
 - Header row always present (starts with `#`)
+- **`AVAILABLE` field format:** IBKR uses `>10000000` notation to indicate quantities exceeding 10 million shares. Parsers must strip the `>` prefix before integer conversion (e.g., `>10000000` → `10000000`)
 
 ### Margin Requirement Schema (v1.0)
 
