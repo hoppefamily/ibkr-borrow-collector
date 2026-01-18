@@ -76,6 +76,15 @@ Resources:
             ExpirationInDays: !Ref DataRetentionDays
             NoncurrentVersionExpirationInDays: 1
 
+          # Parquet cache: Intelligent-Tiering after 7 days (more frequently accessed)
+          - Id: IntelligentTieringForParquet
+            Status: Enabled
+            Prefix: 'ibkr/parquet/'
+            Transitions:
+              - TransitionInDays: 7
+                StorageClass: INTELLIGENT_TIERING
+            NoncurrentVersionExpirationInDays: 1
+
           # Delete incomplete multipart uploads after 7 days
           - Id: CleanupIncompleteUploads
             Status: Enabled
@@ -110,6 +119,7 @@ Resources:
               - s3:ListBucket
             Resource:
               - !Sub '${BorrowDataBucket.Arn}/ibkr/borrow/*'
+              - !Sub '${BorrowDataBucket.Arn}/ibkr/parquet/*'
               - !GetAtt BorrowDataBucket.Arn
 
           # List bucket to find latest snapshots
@@ -124,6 +134,7 @@ Resources:
               StringLike:
                 s3:prefix:
                   - 'ibkr/borrow/*'
+                  - 'ibkr/parquet/*'
 
   # GitHub OIDC Provider
   GitHubOIDCProvider:
