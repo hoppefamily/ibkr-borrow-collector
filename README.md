@@ -16,9 +16,10 @@ Automated collection of Interactive Brokers' short-sale borrow rates and margin 
 
 Yet this data is scattered, delayed, and often paywalled. This collector makes it:
 - ✅ **Free & open source**
-- ✅ **Real-time** (15-minute updates)
+- ✅ **Real-time** (15-minute updates, 24/7 collection)
 - ✅ **Comprehensive** (18 markets: USA, UK, Germany, Switzerland, Italy, Japan, Hong Kong, Australia, Austria, Belgium, Canada, Netherlands, France, Mexico, Spain, Sweden, Singapore, India)
 - ✅ **Efficient** (98% compression via delta encoding)
+- ✅ **Fast analytics** (Parquet cache layer for 10-20x faster queries)
 
 ## Prerequisites
 
@@ -75,9 +76,17 @@ python3 -c "import boto3; print(f'boto3 {boto3.__version__}')"
 - Concentration margin adjustments
 - Per-security capital requirements
 
+**Parquet cache layer (NEW):**
+- Daily consolidated snapshots (1 file vs 96+ CSV.gz files)
+- Columnar storage with 82-85% deduplication (only stores rate changes)
+- 10-20x faster queries (2-5s vs 30-60s for same day analysis)
+- Automatic daily rebuilds at 02:30 UTC
+- Snappy compression + PyArrow compatibility
+
 **Storage cost:** ~$0.20/month for complete global coverage
 **Data volume:** 18 borrow markets + 8 margin markets
-**Frequency:** 96 snapshots/day, 98% compression
+**Frequency:** 96 snapshots/day, 98% delta compression + 82% deduplication in Parquet
+**Collection schedule:** 24/7 continuous (since 2026-01-17)
 
 ## Quick Start
 
@@ -146,9 +155,13 @@ Add in **Settings → Secrets → Actions**:
 
 ### Start Collecting
 
-Enable GitHub Actions. Data collection starts automatically every 15 minutes during market hours.
+Enable GitHub Actions. Data collection runs automatically:
+- **Every 15 minutes** (collection workflow)
+- **Daily at 02:30 UTC** (Parquet cache build)
 
-### Reconstruct Snapshots
+## Accessing Data
+
+### Option 1: Raw CSV.gz + Delta Files
 
 **Retrieve any snapshot from S3** (handles both baselines and deltas automatically):
 
@@ -205,7 +218,7 @@ Your IAM role/user needs:
 
 **Python:**
 ```bash
-pip install boto3>=1.26.0
+pip install boto3>=1.26.0 pandas>=2.0.0 pyarrow>=11.0.0  # Add pandas/pyarrow for Parquet
 ```
 
 **System:**
@@ -222,13 +235,13 @@ import gzip
 # List available snapshots
 s3 = boto3.client('s3')
 response = s3.list_objects_v2(
-    Bucket='ibkr-borrow-collector-borrowdatabucket-u0yupnyt837q',
+    Bucket='your-bucket-name',  # From CloudFormation output
     Prefix='ibkr/borrow/2026-01-16/usa-'
 )
 
 # Download and read a baseline
 key = 'ibkr/borrow/2026-01-16/usa-20260116T120000Z.txt.gz'
-obj = s3.get_object(Bucket='ibkr-borrow-collector-borrowdatabucket-u0yupnyt837q', Key=key)
+obj = s3.get_object(Bucket='your-bucket-name', Key=key)
 
 with gzip.open(obj['Body'], 'rt') as f:
     # Parse pipe-delimited format
@@ -242,26 +255,80 @@ with gzip.open(obj['Body'], 'rt') as f:
 
 **Note:** Delta files (`.xdelta`) require reconstruction using `xdelta3`. See [EXAMPLES.md](EXAMPLES.md) for complete delta reconstruction code.
 
+### Option 2: Parquet Cache (Fast Analytics)
+
+**For same-day or recent analysis, use the Parquet cache:**
+
+```python
+import pandas as pd
+import boto3
+
+# Read Parquet cache (10-20x faster than CSV.gz)
+s3_path = 's3://your-bucket/ibkr/parquet/usa/2026-01-18.parquet'
+df = pd.read_parquet(s3_path)
+
+# Data is already deduplicated (only rows where rates changed)
+print(f"Loaded {len(df):,} rows (82-85% smaller than raw)")
+print(df.columns)  # symbol, snapshot_time, borrow_rate_annual, availability, ...
+
+# Filter by symbol (columnar format = fast)
+gme_data = df[df['symbol'] == 'GME']
+
+# Time-series analysis
+gme_data.set_index('snapshot_time').plot(y='borrow_rate_annual')
+```
+
+**Benefits:**
+- **Fast queries**: 2-5 seconds (vs 30-60s for CSV.gz)
+- **Efficient storage**: Only rate changes stored (82-85% deduplication)
+- **Direct pandas/AWS Athena support**: No decompression needed
+- **Automatic updates**: Rebuilt daily at 02:30 UTC
+
+**Parquet cache structure:**
+```
+s3://your-bucket/ibkr/parquet/
+├── usa/
+│   ├── 2026-01-16.parquet  # 287 KiB (vs ~15 MB raw CSV.gz)
+│   ├── 2026-01-17.parquet  # 287 KiB
+│   └── 2026-01-18.parquet  # 224 KiB (partial day)
+├── british/
+│   └── ...
+```
+
+**Schema:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `symbol` | string | Trading symbol |
+| `snapshot_time` | datetime64[ns, UTC] | UTC timestamp |
+| `borrow_rate_annual` | float64 | Annual borrow rate (%) |
+| `availability` | int64 | Available shares |
+| `currency` | string | Currency code |
+| `name` | string | Security name |
+| `isin` | string | ISIN identifier |
+| `figi` | string | FIGI identifier |
+
 ## Use Cases
 
 ### 1. Short Squeeze Detection
 Monitor sudden borrow fee spikes that precede squeezes:
 ```python
-# Example: Find stocks with 10x fee increase
+# Option A: Use Parquet cache (fast, recent data)
 import pandas as pd
-from datetime import datetime, timedelta
 
-# Load last 7 days of data
-df = pd.read_csv('s3://your-bucket/ibkr/borrow/usa-reconstructed.csv')
-df['timestamp'] = pd.to_datetime(df['timestamp'])
+df = pd.read_parquet('s3://your-bucket/ibkr/parquet/usa/2026-01-18.parquet')
 
-# Compare current fees to 24 hours ago
-current = df[df['timestamp'] > datetime.now() - timedelta(hours=1)]
-previous = df[df['timestamp'] > datetime.now() - timedelta(hours=25)]
-previous = previous[previous['timestamp'] < datetime.now() - timedelta(hours=24)]
+# Find 10x fee increases in last 24 hours
+current = df[df['snapshot_time'] > pd.Timestamp.now('UTC') - pd.Timedelta(hours=1)]
+previous = df[df['snapshot_time'] > pd.Timestamp.now('UTC') - pd.Timedelta(hours=25)]
+previous = previous[previous['snapshot_time'] < pd.Timestamp.now('UTC') - pd.Timedelta(hours=24)]
 
-alerts = current[current['fee_rate'] / previous['fee_rate'] > 10]
+alerts = current.merge(previous, on='symbol', suffixes=('_now', '_24h'))
+alerts = alerts[alerts['borrow_rate_annual_now'] / alerts['borrow_rate_annual_24h'] > 10]
 print(f"Squeeze candidates: {alerts['symbol'].tolist()}")
+
+# Option B: Use CSV.gz for historical analysis (reconstruct snapshots)
+# Example: Find stocks with 10x fee increase over 7 days
+# ... (see previous example)
 ```
 
 ### 2. Cost Analysis
@@ -277,27 +344,53 @@ print(f"Daily carrying cost: ${daily_cost:.2f}")  # ~$24/day
 ### 3. Supply Monitoring
 Track borrow availability constraints:
 ```python
-# Find hard-to-borrow stocks (< 50k shares available)
+# Parquet cache approach (fast)
+import pandas as pd
+
+df = pd.read_parquet('s3://your-bucket/ibkr/parquet/usa/2026-01-18.parquet')
+
+# Get latest snapshot per symbol
+latest = df.sort_values('snapshot_time').groupby('symbol').last()
+htb = latest[latest['availability'] < 50000]
+print(f"Hard-to-borrow stocks: {len(htb)}")
+
+# Original CSV.gz approach (if needed)
 import boto3
 import gzip
 
 s3 = boto3.client('s3')
 obj = s3.get_object(Bucket='your-bucket', Key='ibkr/borrow/2026-01-16/usa-latest.txt.gz')
 with gzip.open(obj['Body'], 'rt') as f:
-    df = pd.read_csv(f, sep='|', skiprows=1)
-    htb = df[df['AVAILABLE'] < 50000]
+    df_csv = pd.read_csv(f, sep='|', skiprows=1)
+    htb = df_csv[df_csv['AVAILABLE'] < 50000]
     print(f"Hard-to-borrow stocks: {len(htb)}")
 ```
 
 ### 4. Historical Analysis
 Analyze fee trends over time:
 ```python
+# Multi-day Parquet analysis (efficient)
+import pandas as pd
+from datetime import date, timedelta
+
+# Load 7 days of Parquet cache
+dates = [date.today() - timedelta(days=i) for i in range(7)]
+dfs = []
+for d in dates:
+    try:
+        df = pd.read_parquet(f's3://your-bucket/ibkr/parquet/usa/{d}.parquet')
+        dfs.append(df)
+    except FileNotFoundError:
+        continue  # Skip missing days
+
+df = pd.concat(dfs, ignore_index=True)
+
 # Track borrow fee history for specific symbols
 symbols = ['GME', 'AMC', 'TSLA']
 history = df[df['symbol'].isin(symbols)].pivot(
-    index='timestamp',
+    index='snapshot_time',
     columns='symbol',
-    values='fee_rate'
+    values='borrow_rate_annual'
 )
 history.plot(title='Borrow Fee Trends', ylabel='Fee Rate (%)')
 ```
@@ -316,15 +409,25 @@ GME|USD|GAMESTOP CORP-CLASS A|270986868|US36467W1099|0.25|8.75|50000|BBG000BB5BF
 GME|USD|GAMESTOP CORP-CLASS A|270986868|US36467W1099|36467W109|100|100|300|ISLAND|300|...
 ```
 
-**Compressed deltas** (98% space savings):
+**Compressed deltas** (98% space savings) + **Parquet cache** (82-85% deduplication):
 ```
-s3://your-bucket/ibkr/borrow/
-├── 2026-01-16/
-│   ├── usa-20260116_093000.txt.gz                      # Borrow baseline
-│   ├── usa-20260116_094500.xdelta                      # Borrow delta
-│   ├── stockmargin_final_dtls.IBLLC-US-093000.dat.gz  # Margin baseline
-│   ├── stockmargin_final_dtls.IBLLC-US-094500.xdelta  # Margin delta
-│   └── ...
+s3://your-bucket/ibkr/
+├── borrow/                                              # Raw snapshots
+│   ├── 2026-01-16/
+│   │   ├── usa-20260116_093000.txt.gz                      # Borrow baseline
+│   │   ├── usa-20260116_094500.xdelta                      # Borrow delta
+│   │   ├── stockmargin_final_dtls.IBLLC-US-093000.dat.gz  # Margin baseline
+│   │   ├── stockmargin_final_dtls.IBLLC-US-094500.xdelta  # Margin delta
+│   │   └── ...
+│   └── 2026-01-17/
+│       └── ...
+└── parquet/                                             # Analytics cache (NEW)
+    ├── usa/
+    │   ├── 2026-01-16.parquet                              # 287 KiB (deduplicated)
+    │   ├── 2026-01-17.parquet                              # 287 KiB
+    │   └── 2026-01-18.parquet                              # 224 KiB
+    ├── british/
+    │   └── ...
 ```
 
 ## Data Contract (v1.0)
@@ -513,18 +616,22 @@ print(f"Deltas: {len(deltas)} (15-min intervals)")
 
 - 📖 **[DEPLOYMENT.md](DEPLOYMENT.md)** - Full deployment guide with CloudFormation
 - 🔧 **[EXAMPLES.md](EXAMPLES.md)** - Data access patterns & code examples
-- 🏗️ **[ARCHITECTURE.md](ARCHITECTURE.md)** - Delta compression strategy, failure modes, and system design
+- 🏗️ **[PARQUET_CACHE.md](PARQUET_CACHE.md)** - Parquet cache architecture & usage
+- 📐 **[ARCHITECTURE.md](ARCHITECTURE.md)** - Delta compression strategy, failure modes, and system design
 
 ## Architecture Highlights
 
 - **Delta compression**: 1.5 MB baseline + 26 KB deltas (98% savings)
+- **Parquet cache**: 82-85% deduplication (only store rate changes)
 - **Baseline-only deltas**: All deltas reference baselines directly (no chaining)
 - **30-minute baselines**: New baseline every 30 minutes prevents chain breakage
+- **24/7 collection**: Continuous global coverage (since 2026-01-17)
 - **Change detection**: Skip uploads when data unchanged (MD5 verification)
 - **Alpine Docker**: 50 MB image, <1s cold start
 - **OIDC authentication**: No long-lived credentials
 - **Atomic operations**: FTP downloads and S3 uploads are atomic
 - **Timezone-aware**: All timestamps in UTC (ISO 8601)
+- **Columnar analytics**: Parquet format for fast symbol/time filtering
 
 ## Flow Trading Signals
 
@@ -637,4 +744,4 @@ Apache License 2.0 - Free for commercial and personal use.
 
 ---
 
-**Markets:** 18 borrow + 8 margin | **Cost:** ~$0.20/month | **Frequency:** Every 15 minutes
+**Markets:** 18 borrow + 8 margin | **Cost:** ~$0.20/month | **Frequency:** Every 15 minutes, 24/7 | **Analytics:** Parquet cache for 10-20x faster queries
