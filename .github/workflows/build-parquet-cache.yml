@@ -1,0 +1,95 @@
+name: Build Parquet Cache
+
+on:
+  schedule:
+    # Run daily at 02:30 UTC (after all collections complete)
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to build cache for (YYYY-MM-DD, leave empty for yesterday)'
+        required: false
+        type: string
+      force:
+        description: 'Force rebuild even if cache exists'
+        required: false
+        type: boolean
+        default: false
+
+# Required for OIDC authentication
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-cache:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      # Configure AWS credentials via OIDC
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-session-name: GitHubActions-ParquetCache
+
+      - name: Determine target date
+        id: date
+        run: |
+          if [ -n "${{ inputs.date }}" ]; then
+            echo "target_date=${{ inputs.date }}" >> $GITHUB_OUTPUT
+          else
+            # Use yesterday's date (data collection completes at ~02:00 UTC)
+            echo "target_date=$(date -u -d yesterday +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Parquet cache
+        env:
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ inputs.force }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+
+          python build_parquet_cache.py \
+            --date ${{ steps.date.outputs.target_date }} \
+            --bucket $S3_BUCKET \
+            $FORCE_FLAG
+
+      - name: Verify cache was created
+        env:
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+        run: |
+          TARGET_DATE=${{ steps.date.outputs.target_date }}
+          CACHE_KEY="ibkr/parquet/usa/${TARGET_DATE}.parquet"
+
+          if aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" > /dev/null 2>&1; then
+            echo "✅ Cache verified: s3://${S3_BUCKET}/${CACHE_KEY}"
+            SIZE=$(aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" | awk '{print $3}')
+            echo "   Size: $(numfmt --to=iec-i --suffix=B $SIZE)"
+          else
+            echo "❌ Cache not found: s3://${S3_BUCKET}/${CACHE_KEY}"
+            exit 1
+          fi
+
+      - name: List recent caches
+        env:
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+        run: |
+          echo "Recent Parquet caches:"
+          aws s3 ls "s3://${S3_BUCKET}/ibkr/parquet/usa/" --recursive --human-readable | tail -10
