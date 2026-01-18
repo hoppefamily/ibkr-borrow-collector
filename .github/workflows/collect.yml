@@ -2,9 +2,8 @@ name: Collect IBKR Borrow Data
 
 on:
   schedule:
-    # Run every 15 minutes during market hours (approx 6 AM - 8 PM ET = 11 AM - 1 AM UTC)
-    - cron: '*/15 11-23 * * 1-5'
-    - cron: '*/15 0-1 * * 2-6'
+    # Run every 15 minutes, 24/7 (global markets, some trade on weekends)
+    - cron: '*/15 * * * *'
   workflow_dispatch:  # Allow manual trigger
 
 # Required for OIDC authentication
