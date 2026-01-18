@@ -236,14 +236,15 @@ class ParquetCacheBuilder:
                         time_str = bof_parts[2]
                         datetime_str = f"{date_str} {time_str}"
                         snapshot_time = pd.to_datetime(datetime_str, format="%Y.%m.%d %H:%M:%S", utc=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    raise ValueError(f"Failed to parse #BOF timestamp from {s3_key}: {e}") from e
 
-            # Fallback to filename
+            # No fallback - fail hard if #BOF header is missing or invalid
             if snapshot_time is None:
-                filename = Path(s3_key).name
-                timestamp_str = filename.split("-")[1].split(".")[0]
-                snapshot_time = pd.to_datetime(timestamp_str, format="%Y%m%d_%H%M%S", utc=True)
+                raise ValueError(
+                    f"Missing or invalid #BOF header in {s3_key}. "
+                    f"Expected format: #BOF|YYYY.MM.DD|HH:MM:SS"
+                )
 
             records = []
             for line in lines:
