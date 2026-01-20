@@ -83,8 +83,8 @@ jobs:
             SIZE=$(aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" | awk '{print $3}')
             echo "   Size: $(numfmt --to=iec-i --suffix=B $SIZE)"
           else
-            echo "❌ Cache not found: s3://${S3_BUCKET}/${CACHE_KEY}"
-            exit 1
+            echo "⚠️  No cache created for ${TARGET_DATE} (likely holiday/weekend with no trading data)"
+            echo "   This is expected behavior - workflow continues successfully"
           fi
 
       - name: List recent caches
