@@ -93,14 +93,3 @@ jobs:
         run: |
           echo "Recent Parquet caches:"
           aws s3 ls "s3://${S3_BUCKET}/ibkr/parquet/usa/" --recursive --human-readable | tail -10
-
-      - name: Trigger Flow-State Monitor
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.FLOW_STATE_MONITOR_DISPATCH_TOKEN }}
-        run: |
-          echo "Triggering Flow-State Monitor workflow..."
-          gh workflow run "Daily Flow-State Monitor (EOD)" \
-            --repo hoppefamily/flow-state-monitor \
-            --ref main
-          echo "✅ Flow-State Monitor triggered successfully"
