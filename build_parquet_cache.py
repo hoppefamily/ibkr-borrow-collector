@@ -138,36 +138,43 @@ class ParquetCacheBuilder:
         date_prefix = f"{self._source_prefix}/{date_str}/"
 
         try:
-            response = self._s3.list_objects_v2(
+            # Use paginator to handle >1000 objects
+            paginator = self._s3.get_paginator('list_objects_v2')
+            pages = paginator.paginate(
                 Bucket=self._bucket,
                 Prefix=date_prefix
             )
+            
+            # Collect all objects from all pages
+            all_objects = []
+            for page in pages:
+                if "Contents" in page:
+                    all_objects.extend(page["Contents"])
+                    
         except Exception as e:
             logger.error(f"Failed to list snapshots for {date_str}: {e}")
             return False
 
-        if "Contents" not in response:
+        if not all_objects:
             logger.warning(f"No snapshots found for {date_str}")
             return False
 
         # Debug logging
-        total_files = len(response["Contents"])
+        total_files = len(all_objects)
         logger.info(f"Found {total_files} total files for {date_str}")
-        if total_files > 0:
-            logger.debug(f"  Sample keys: {[obj['Key'] for obj in response['Contents'][:3]]}")
 
         # Filter for baseline snapshots (*.txt.gz files for the market)
         snapshots = [
             obj["Key"]
-            for obj in response["Contents"]
+            for obj in all_objects
             if obj["Key"].endswith(".txt.gz") and f"/{market}-" in obj["Key"]
         ]
 
         if not snapshots:
             # Debug: show what we DID find
-            txt_gz_files = [obj["Key"] for obj in response["Contents"] if obj["Key"].endswith(".txt.gz")]
+            txt_gz_files = [obj["Key"] for obj in all_objects if obj["Key"].endswith(".txt.gz")]
             logger.warning(f"No {market} snapshots found for {date_str}")
-            logger.warning(f"  Found {len(txt_gz_files)} .txt.gz files total: {txt_gz_files[:5] if txt_gz_files else 'none'}")
+            logger.warning(f"  Found {len(txt_gz_files)} .txt.gz files total")
             return False
 
         logger.info(f"Found {len(snapshots)} snapshots for {market} {date_str}")
