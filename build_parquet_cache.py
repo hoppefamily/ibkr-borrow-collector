@@ -150,6 +150,12 @@ class ParquetCacheBuilder:
             logger.warning(f"No snapshots found for {date_str}")
             return False
 
+        # Debug logging
+        total_files = len(response["Contents"])
+        logger.info(f"Found {total_files} total files for {date_str}")
+        if total_files > 0:
+            logger.debug(f"  Sample keys: {[obj['Key'] for obj in response['Contents'][:3]]}")
+
         # Filter for baseline snapshots (*.txt.gz files for the market)
         snapshots = [
             obj["Key"]
@@ -158,7 +164,10 @@ class ParquetCacheBuilder:
         ]
 
         if not snapshots:
+            # Debug: show what we DID find
+            txt_gz_files = [obj["Key"] for obj in response["Contents"] if obj["Key"].endswith(".txt.gz")]
             logger.warning(f"No {market} snapshots found for {date_str}")
+            logger.warning(f"  Found {len(txt_gz_files)} .txt.gz files total: {txt_gz_files[:5] if txt_gz_files else 'none'}")
             return False
 
         logger.info(f"Found {len(snapshots)} snapshots for {market} {date_str}")
