@@ -144,13 +144,13 @@ class ParquetCacheBuilder:
                 Bucket=self._bucket,
                 Prefix=date_prefix
             )
-            
+
             # Collect all objects from all pages
             all_objects = []
             for page in pages:
                 if "Contents" in page:
                     all_objects.extend(page["Contents"])
-                    
+
         except Exception as e:
             logger.error(f"Failed to list snapshots for {date_str}: {e}")
             return False
@@ -205,7 +205,8 @@ class ParquetCacheBuilder:
         # Deduplicate: keep only rows where borrow_rate or availability changed
         combined_df = combined_df.sort_values(['symbol', 'snapshot_time'])
 
-        deduplicated_df = combined_df.groupby('symbol', group_keys=False).apply(
+        # Keep symbol column in the result by using as_index=False or preserving it explicitly
+        deduplicated_df = combined_df.groupby('symbol', as_index=False, group_keys=False).apply(
             lambda group: group[
                 (group['borrow_rate_annual'] != group['borrow_rate_annual'].shift()) |
                 (group['availability'] != group['availability'].shift())
