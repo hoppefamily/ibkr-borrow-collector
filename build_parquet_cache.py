@@ -27,7 +27,9 @@ Usage:
 import argparse
 import gzip
 import logging
+import subprocess
 import sys
+import tempfile
 from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -70,6 +72,101 @@ class ParquetCacheBuilder:
             return True
         except self._s3.exceptions.ClientError:
             return False
+
+    def _is_xdelta_available(self) -> bool:
+        """Check if xdelta3 is installed."""
+        try:
+            subprocess.run(['xdelta3', '-V'], capture_output=True, check=True)
+            return True
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return False
+
+    def _reconstruct_from_delta(
+        self,
+        delta_key: str,
+        baseline_key: str,
+        temp_dir: str
+    ) -> Optional[str]:
+        """
+        Reconstruct a snapshot from a delta file.
+
+        Args:
+            delta_key: S3 key of the delta file
+            baseline_key: S3 key of the baseline file
+            temp_dir: Temporary directory for processing
+
+        Returns:
+            Path to reconstructed file, or None if failed
+        """
+        try:
+            # Download baseline
+            baseline_gz_path = f"{temp_dir}/baseline.txt.gz"
+            baseline_path = f"{temp_dir}/baseline.txt"
+
+            logger.debug(f"Downloading baseline: {baseline_key}")
+            self._s3.download_file(
+                Bucket=self._bucket,
+                Key=baseline_key,
+                Filename=baseline_gz_path
+            )
+
+            # Decompress baseline
+            with gzip.open(baseline_gz_path, 'rb') as f_in:
+                with open(baseline_path, 'wb') as f_out:
+                    f_out.write(f_in.read())
+
+            # Download delta
+            delta_path = f"{temp_dir}/delta.xdelta"
+            logger.debug(f"Downloading delta: {delta_key}")
+            self._s3.download_file(
+                Bucket=self._bucket,
+                Key=delta_key,
+                Filename=delta_path
+            )
+
+# Apply delta to reconstruct (use unique filename)
+            import uuid
+            output_path = f"{temp_dir}/reconstructed_{uuid.uuid4().hex}.txt"
+            subprocess.run(
+                ['xdelta3', '-d', '-s', baseline_path, delta_path, output_path],
+                capture_output=True,
+                check=True
+            )
+
+            return output_path
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"xdelta3 reconstruction failed for {delta_key}: {e.stderr.decode() if e.stderr else str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to reconstruct delta {delta_key}: {e}")
+            return None
+
+    def _find_baseline_for_delta(self, delta_key: str) -> Optional[str]:
+        """
+        Find the baseline that a delta is based on using S3 metadata.
+
+        Args:
+            delta_key: S3 key of the delta file
+
+        Returns:
+            S3 key of the baseline, or None if not found
+        """
+        try:
+            response = self._s3.head_object(Bucket=self._bucket, Key=delta_key)
+            metadata = response.get('Metadata', {})
+            source_key = metadata.get('source-key')
+
+            if source_key:
+                logger.debug(f"Delta {Path(delta_key).name} -> baseline {Path(source_key).name}")
+                return source_key
+            else:
+                logger.warning(f"Delta {delta_key} missing source-key metadata")
+                return None
+
+        except Exception as e:
+            logger.error(f"Failed to get metadata for {delta_key}: {e}")
+            return None
 
     def list_available_dates(self, market: str = "usa") -> List[date]:
         """List all dates with CSV.gz snapshots."""
@@ -133,7 +230,12 @@ class ParquetCacheBuilder:
 
         logger.info(f"Building Parquet cache for {market} {target_date}")
 
-        # List all CSV.gz files for the date
+        # Check if xdelta3 is available for delta reconstruction
+        xdelta_available = self._is_xdelta_available()
+        if not xdelta_available:
+            logger.warning("xdelta3 not available - will only process baseline snapshots")
+
+        # List all files for the date
         date_str = target_date.strftime("%Y-%m-%d")
         date_prefix = f"{self._source_prefix}/{date_str}/"
 
@@ -164,32 +266,78 @@ class ParquetCacheBuilder:
         logger.info(f"Found {total_files} total files for {date_str}")
 
         # Filter for baseline snapshots (*.txt.gz files for the market)
-        snapshots = [
+        baselines = [
             obj["Key"]
             for obj in all_objects
             if obj["Key"].endswith(".txt.gz") and f"/{market}-" in obj["Key"]
         ]
 
-        if not snapshots:
+        # Filter for delta snapshots (*.xdelta files for the market)
+        deltas = [
+            obj["Key"]
+            for obj in all_objects
+            if obj["Key"].endswith(".xdelta") and f"/{market}-" in obj["Key"]
+        ] if xdelta_available else []
+
+        if not baselines and not deltas:
             # Debug: show what we DID find
             txt_gz_files = [obj["Key"] for obj in all_objects if obj["Key"].endswith(".txt.gz")]
+            xdelta_files = [obj["Key"] for obj in all_objects if obj["Key"].endswith(".xdelta")]
             logger.warning(f"No {market} snapshots found for {date_str}")
             logger.warning(f"  Found {len(txt_gz_files)} .txt.gz files total")
+            logger.warning(f"  Found {len(xdelta_files)} .xdelta files total")
             return False
 
-        logger.info(f"Found {len(snapshots)} snapshots for {market} {date_str}")
+        logger.info(f"Found {len(baselines)} baseline + {len(deltas)} delta snapshots for {market} {date_str}")
 
-        # Read and combine all snapshots
+        # Read and combine all snapshots (baselines + deltas)
         all_dfs = []
-        for snapshot_key in sorted(snapshots):
+
+        # Process baselines
+        for snapshot_key in sorted(baselines):
             try:
                 df = self._read_snapshot(snapshot_key, target_date)
                 if df is not None and not df.empty:
                     all_dfs.append(df)
-                    logger.debug(f"  ✓ Read {len(df):,} rows from {Path(snapshot_key).name}")
+                    logger.debug(f"  ✓ Read {len(df):,} rows from baseline {Path(snapshot_key).name}")
             except Exception as e:
-                logger.warning(f"  ✗ Failed to read snapshot {snapshot_key}: {e}")
+                logger.warning(f"  ✗ Failed to read baseline {snapshot_key}: {e}")
                 continue
+
+        # Process deltas (if xdelta3 available)
+        if xdelta_available and deltas:
+            temp_dir = tempfile.mkdtemp(prefix='parquet_cache_')
+            try:
+                for delta_key in sorted(deltas):
+                    try:
+                        # Find the baseline this delta is based on
+                        baseline_key = self._find_baseline_for_delta(delta_key)
+                        if not baseline_key:
+                            logger.warning(f"  ✗ Skipping delta {Path(delta_key).name}: baseline not found")
+                            continue
+
+                        # Reconstruct the snapshot from delta
+                        reconstructed_path = self._reconstruct_from_delta(
+                            delta_key, baseline_key, temp_dir
+                        )
+
+                        if reconstructed_path:
+                            # Read the reconstructed snapshot
+                            df = self._read_snapshot_from_file(reconstructed_path, target_date)
+                            if df is not None and not df.empty:
+                                all_dfs.append(df)
+                                logger.debug(f"  ✓ Read {len(df):,} rows from delta {Path(delta_key).name}")
+                        else:
+                            logger.warning(f"  ✗ Failed to reconstruct delta {delta_key}")
+
+                    except Exception as e:
+                        logger.warning(f"  ✗ Failed to process delta {delta_key}: {e}")
+                        continue
+
+            finally:
+                # Cleanup temp directory
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
         if not all_dfs:
             logger.error(f"Failed to read any snapshots for {date_str}")
@@ -198,8 +346,8 @@ class ParquetCacheBuilder:
         # Combine all snapshots
         combined_df = pd.concat(all_dfs, ignore_index=True)
         logger.info(
-            f"Combined {len(all_dfs)} snapshots: {len(combined_df):,} rows, "
-            f"{len(combined_df['symbol'].unique()):,} unique symbols"
+            f"Combined {len(baselines)} baselines + {len(deltas) if xdelta_available else 0} deltas: "
+            f"{len(combined_df):,} rows, {len(combined_df['symbol'].unique()):,} unique symbols"
         )
 
         # Deduplicate: keep only rows where borrow_rate or availability changed
@@ -226,6 +374,83 @@ class ParquetCacheBuilder:
         self._write_parquet(deduplicated_df, cache_key)
 
         return True
+
+    def _read_snapshot_from_file(self, file_path: str, target_date: date) -> Optional[pd.DataFrame]:
+        """Read a snapshot from a local file (used for reconstructed deltas)."""
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+
+            # Parse pipe-delimited format
+            lines = content.strip().split("\n")
+
+            if len(lines) < 3:
+                return None
+
+            # Extract exact timestamp from #BOF header
+            snapshot_time = None
+            if lines[0].startswith("#BOF"):
+                try:
+                    bof_parts = lines[0].split("|")
+                    if len(bof_parts) >= 3:
+                        date_str = bof_parts[1]
+                        time_str = bof_parts[2]
+                        datetime_str = f"{date_str} {time_str}"
+                        snapshot_time = pd.to_datetime(datetime_str, format="%Y.%m.%d %H:%M:%S", utc=True)
+                except Exception as e:
+                    raise ValueError(f"Failed to parse #BOF timestamp from {file_path}: {e}") from e
+
+            # No fallback - fail hard if #BOF header is missing or invalid
+            if snapshot_time is None:
+                raise ValueError(
+                    f"Missing or invalid #BOF header in {file_path}. "
+                    f"Expected format: #BOF|YYYY.MM.DD|HH:MM:SS"
+                )
+
+            records = []
+            for line in lines:
+                if line.startswith("#") or not line.strip():
+                    continue
+
+                parts = line.split("|")
+                if len(parts) < 9:
+                    continue
+
+                symbol = parts[0].strip()
+                fee_rate_str = parts[6].strip()
+
+                if not fee_rate_str or fee_rate_str.upper() == "NA":
+                    continue
+
+                try:
+                    borrow_rate = float(fee_rate_str)
+
+                    available_str = parts[7].strip()
+                    if available_str.upper() == "NA":
+                        availability = 0
+                    elif available_str.startswith(">"):
+                        availability = int(available_str[1:])
+                    else:
+                        availability = int(float(available_str))
+                except (ValueError, IndexError):
+                    continue
+
+                records.append({
+                    "symbol": symbol,
+                    "timestamp": target_date,
+                    "borrow_rate_annual": borrow_rate,
+                    "availability": availability,
+                    "snapshot_time": snapshot_time,
+                })
+
+            if not records:
+                return None
+
+            return pd.DataFrame(records)
+
+        except Exception as e:
+            logger.error(f"Error reading snapshot from {file_path}: {e}")
+            raise
 
     def _read_snapshot(self, s3_key: str, target_date: date) -> Optional[pd.DataFrame]:
         """Read a single CSV.gz snapshot and parse into DataFrame."""
