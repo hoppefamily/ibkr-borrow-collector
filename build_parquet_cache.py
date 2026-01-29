@@ -353,13 +353,16 @@ class ParquetCacheBuilder:
         # Deduplicate: keep only rows where borrow_rate or availability changed
         combined_df = combined_df.sort_values(['symbol', 'snapshot_time'])
 
-        # Keep symbol column in the result by using as_index=False or preserving it explicitly
-        deduplicated_df = combined_df.groupby('symbol', as_index=False, group_keys=False).apply(
-            lambda group: group[
+        # Deduplicate per symbol - keep first row and rows where values changed
+        def deduplicate_symbol(group):
+            # Keep first row plus rows where either value changed from previous
+            mask = (
                 (group['borrow_rate_annual'] != group['borrow_rate_annual'].shift()) |
                 (group['availability'] != group['availability'].shift())
-            ]
-        ).reset_index(drop=True)
+            )
+            return group[mask]
+        
+        deduplicated_df = combined_df.groupby('symbol', group_keys=False).apply(deduplicate_symbol).reset_index(drop=True)
 
         rows_before = len(combined_df)
         rows_after = len(deduplicated_df)
