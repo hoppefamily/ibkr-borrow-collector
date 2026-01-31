@@ -511,6 +511,8 @@ class ParquetCacheBuilder:
                 if df is not None and not df.empty:
                     all_dfs.append(df)
                     logger.debug(f"  ✓ Read {len(df):,} rows from baseline {Path(snapshot_key).name}")
+                else:
+                    logger.debug(f"  ○ Baseline {Path(snapshot_key).name} returned no data")
             except Exception as e:
                 logger.warning(f"  ✗ Failed to read baseline {snapshot_key}: {e}")
                 continue
@@ -543,10 +545,11 @@ class ParquetCacheBuilder:
                             logger.warning(f"  ✗ Failed to reconstruct delta {delta_key}")
 
                     except ValueError as e:
-                        # Corrupt metadata - this is fatal
+                        # Corrupt metadata - skip this delta but continue processing
                         if "Corrupt metadata" in str(e):
-                            logger.error(f"FATAL: {e}")
-                            raise
+                            logger.warning(f"  ✗ Skipping delta with corrupt metadata: {Path(delta_key).name}")
+                            delta_failures.append((delta_key, str(e)))
+                            continue
                         # Other ValueErrors are non-fatal
                         delta_failures.append((delta_key, str(e)))
                         logger.warning(f"  ✗ Failed to process delta {delta_key}: {e}")

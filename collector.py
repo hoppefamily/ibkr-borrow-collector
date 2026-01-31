@@ -367,10 +367,12 @@ def find_latest_baseline(s3: S3Uploader, s3_prefix: str, filename_base: str) -> 
     # List all files for this market in today's folder
     all_files = s3.list_objects(s3_prefix)
 
-    # Find baseline files only
+    # Find baseline files only (must end with .txt.gz or .dat.gz, NOT .xdelta)
     baselines = []
     for s3_key in all_files:
-        if filename_base in s3_key and s3_key.endswith('.gz') and '.xdelta' not in s3_key:
+        # Explicit check: must be a .txt.gz or .dat.gz file (baseline), not .xdelta (delta)
+        is_baseline = (s3_key.endswith('.txt.gz') or s3_key.endswith('.dat.gz')) and filename_base in s3_key
+        if is_baseline:
             try:
                 parts = s3_key.split('/')[-1].split('-')
                 if len(parts) >= 2:
