@@ -94,6 +94,41 @@ class FTPDownloader:
                 pass
 
 
+class FileValidator:
+    """Validate file content and structure."""
+
+    @staticmethod
+    def has_data(filepath: str) -> bool:
+        """Check if file contains actual data rows (not just header).
+        
+        IBKR files have format:
+            #BOF|date|time
+            #SYM|CUR|NAME|...
+            data rows here
+            #EOF|count
+        
+        Returns True if count > 0, False otherwise.
+        """
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+                
+            # Check last line for EOF marker with count
+            if lines:
+                last_line = lines[-1].strip()
+                if last_line.startswith('#EOF|'):
+                    count = int(last_line.split('|')[1])
+                    return count > 0
+            
+            # Fallback: count non-comment lines
+            data_lines = [l for l in lines if not l.startswith('#')]
+            return len(data_lines) > 0
+            
+        except Exception as e:
+            logger.warning(f"Error checking file content: {e}")
+            return True  # Assume has data if can't determine
+
+
 class MD5Verifier:
     """Verify file integrity using MD5 checksums."""
 
@@ -446,6 +481,18 @@ def process_file(
     content_md5 = MD5Verifier.calculate_md5(local_file)
     collector_logger.stats['total_bytes_downloaded'] += original_size
 
+    # Check if file has actual data (not just header)
+    if not FileValidator.has_data(local_file):
+        logger.info(f"⊘ File {filename} contains no data (empty market) - skipping upload")
+        collector_logger.log_file(
+            filename,
+            'skipped',
+            reason='no_data',
+            size_original=original_size,
+            md5=content_md5
+        )
+        return True  # Success - no data is valid state
+
     # Generate timestamped filename
     current_time = datetime.now(timezone.utc)
     timestamp = current_time.strftime('%Y%m%d_%H%M%S')
@@ -717,12 +764,12 @@ def process_file_with_ftp(args_tuple):
             xdelta_available=xdelta_available,
             cache_dir=cache_dir
         )
-        
+
         if success:
             logger.info(f"[{filename}] ✓ Completed successfully")
         else:
             logger.warning(f"[{filename}] ✗ Processing failed")
-        
+
         return (filename, success)
     except Exception as e:
         logger.error(f"[{filename}] Error: {e}")
@@ -927,19 +974,19 @@ def main():
             logger.info(f"\n{'='*60}")
             logger.info(f"Processing {len(tasks)} files in parallel (max 6 workers)")
             logger.info(f"{'='*60}\n")
-            
+
             completed = 0
             failed = 0
             with ThreadPoolExecutor(max_workers=6) as executor:
                 futures = [executor.submit(process_file_with_ftp, task) for task in tasks]
-                
+
                 for future in as_completed(futures):
                     try:
                         filename, success = future.result()
                         completed += 1
                         if not success:
                             failed += 1
-                        
+
                         # Progress indicator
                         progress = f"[{completed}/{len(tasks)}]"
                         status = "✓" if success else "✗"
@@ -948,7 +995,7 @@ def main():
                         completed += 1
                         failed += 1
                         logger.error(f"[{completed}/{len(tasks)}] Task exception: {e}")
-            
+
             logger.info(f"\n{'='*60}")
             logger.info(f"Parallel processing complete: {completed - failed}/{completed} successful")
             logger.info(f"{'='*60}")
