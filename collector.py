@@ -48,12 +48,12 @@ class FTPDownloader:
 
     def connect(self, timeout: int = 30) -> None:
         """Connect to FTP server."""
-        logger.info(f"Connecting to FTP server: {self.host}")
+        logger.debug(f"Connecting to FTP server: {self.host}")
         try:
             self.ftp = ftplib.FTP(self.host, timeout=timeout)
             self.ftp.login(self.user, self.password)
-            logger.info(f"Connected to {self.host}")
-            logger.info(f"Welcome message: {self.ftp.getwelcome()}")
+            logger.debug(f"Connected to {self.host}")
+            logger.debug(f"Welcome message: {self.ftp.getwelcome()}")
         except Exception as e:
             logger.error(f"Failed to connect to FTP: {e}")
             raise
@@ -66,7 +66,7 @@ class FTPDownloader:
         try:
             # Download to temporary .part file first
             part_path = f"{local_path}.part"
-            logger.info(f"Downloading {remote_path} -> {local_path}")
+            logger.debug(f"Downloading {remote_path}")
             with open(part_path, 'wb') as f:
                 self.ftp.retrbinary(f'RETR {remote_path}', f.write)
 
@@ -74,7 +74,7 @@ class FTPDownloader:
             os.replace(part_path, local_path)
 
             size = os.path.getsize(local_path)
-            logger.info(f"Downloaded {size:,} bytes")
+            logger.debug(f"Downloaded {size:,} bytes")
             return True
 
         except ftplib.error_perm as e:
@@ -198,7 +198,7 @@ class FileCompressor:
             output_path = f"{input_path}.gz"
 
         original_size = os.path.getsize(input_path)
-        logger.info(f"Compressing {input_path} (level {level})")
+        logger.debug(f"Compressing {input_path} (level {level})")
 
         with open(input_path, 'rb') as f_in:
             with gzip.open(output_path, 'wb', compresslevel=level) as f_out:
@@ -206,7 +206,7 @@ class FileCompressor:
 
         compressed_size = os.path.getsize(output_path)
         ratio = (1 - compressed_size / original_size) * 100
-        logger.info(f"Compressed: {original_size:,} -> {compressed_size:,} bytes ({ratio:.1f}% reduction)")
+        logger.debug(f"Compressed: {original_size:,} -> {compressed_size:,} bytes ({ratio:.1f}% reduction)")
 
         return output_path
 
@@ -227,7 +227,7 @@ class XDeltaCompressor:
     def create_delta(source_path: str, target_path: str, delta_path: str) -> bool:
         """Create delta from source to target."""
         try:
-            logger.info(f"Creating xdelta3 delta: {source_path} -> {target_path}")
+            logger.debug(f"Creating xdelta3 delta: {source_path} -> {target_path}")
             subprocess.run(
                 ['xdelta3', '-e', '-9', '-s', source_path, target_path, delta_path],
                 capture_output=True,
@@ -236,7 +236,7 @@ class XDeltaCompressor:
             delta_size = os.path.getsize(delta_path)
             target_size = os.path.getsize(target_path)
             savings = (1 - delta_size / target_size) * 100 if target_size > 0 else 0
-            logger.info(f"Delta created: {delta_size:,} bytes ({savings:.1f}% savings)")
+            logger.debug(f"Delta created: {delta_size:,} bytes ({savings:.1f}% savings)")
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"xdelta3 failed: {e.stderr.decode() if e.stderr else str(e)}")
@@ -333,16 +333,16 @@ class S3Uploader:
             # Check if file already exists to avoid overwriting from parallel runs
             try:
                 self.s3_client.head_object(Bucket=self.bucket, Key=s3_key)
-                logger.info(f"⊘ File already exists in S3 (parallel collection?): {s3_key}")
+                logger.debug(f"File already exists in S3: {s3_key}")
                 return True  # Consider it success since file exists
             except ClientError as e:
                 if e.response['Error']['Code'] != '404':
                     # Real error, not just "not found"
                     raise
 
-            logger.info(f"Uploading to s3://{self.bucket}/{s3_key}")
+            logger.debug(f"Uploading to s3://{self.bucket}/{s3_key}")
             self.s3_client.upload_file(local_path, self.bucket, s3_key, ExtraArgs=extra_args)
-            logger.info("✓ Upload successful")
+            logger.debug("✓ Upload successful")
             return True
 
         except ClientError as e:
@@ -515,7 +515,7 @@ def process_file(
     if create_baseline:
         # Create full baseline snapshot
         reason = "scheduled baseline" if is_scheduled_baseline else "delta unavailable" if not xdelta_available else "delta disabled"
-        logger.info(f"Creating baseline snapshot for {filename} (reason: {reason})")
+        logger.debug(f"Creating baseline snapshot for {filename} (reason: {reason})")
         timestamped_name = f"{base_name}-{timestamp}.{file_extension}.gz"
         s3_key = f"{s3_prefix}/{timestamped_name}"
 
@@ -551,7 +551,7 @@ def process_file(
 
     else:
         # Create delta from most recent baseline (simplified - no chained deltas)
-        logger.info(f"Creating delta snapshot for {filename}")
+        logger.debug(f"Creating delta snapshot for {filename}")
 
         # Find previous baseline
         latest_baseline = find_latest_baseline(s3, s3_prefix, base_name)
@@ -562,7 +562,7 @@ def process_file(
                               xdelta_available=xdelta_available, cache_dir=cache_dir)
 
         source_s3_key, source_timestamp = latest_baseline
-        logger.info(f"Using baseline as source: {source_s3_key}")
+        logger.debug(f"Using baseline as source: {source_s3_key}")
 
         # Download and decompress baseline
         source_local = os.path.join(temp_dir, f"{base_name}_source.{file_extension}")
@@ -754,9 +754,6 @@ def process_file_with_ftp(args_tuple):
         ftp.connect(timeout=60)
         s3 = S3Uploader(s3_bucket)
 
-        # Use concise logging prefix for parallel execution
-        logger.info(f"[{filename}] Starting processing...")
-
         success = process_file(
             ftp, s3, collector_logger,
             filename, file_type, s3_prefix, temp_dir,
@@ -766,9 +763,9 @@ def process_file_with_ftp(args_tuple):
         )
 
         if success:
-            logger.info(f"[{filename}] ✓ Completed successfully")
+            logger.info(f"[{filename}] ✓ Completed")
         else:
-            logger.warning(f"[{filename}] ✗ Processing failed")
+            logger.warning(f"[{filename}] ✗ Failed")
 
         return (filename, success)
     except Exception as e:
