@@ -134,35 +134,24 @@ jobs:
             done
 
           else
-            # Missing mode (default) - build all missing caches
+            # Missing mode (default) - build all missing caches efficiently
             DAYS_BACK="${{ inputs.days_back }}"
             DAYS_BACK="${DAYS_BACK:-30}"
 
-            START_DATE=$(date -u -d "$DAYS_BACK days ago" +%Y-%m-%d)
-            END_DATE=$(date -u -d yesterday +%Y-%m-%d)
-
-            echo "Checking for missing caches from $START_DATE to $END_DATE"
+            echo "Building missing caches for last $DAYS_BACK days (efficient batch check)"
 
             for MARKET in $MARKETS; do
               echo ""
               echo "=== $MARKET ==="
 
-              # Get list of dates with raw data
-              RAW_DATES=$(aws s3 ls "s3://${S3_BUCKET}/ibkr/borrow/" | grep "PRE" | awk '{print $2}' | tr -d '/' | while read date; do
-                if [[ "$date" > "$START_DATE" || "$date" == "$START_DATE" ]] && [[ "$date" < "$END_DATE" || "$date" == "$END_DATE" ]]; then
-                  echo $date
-                fi
-              done)
-
-              # Check each date for missing cache
-              for DATE in $RAW_DATES; do
-                CACHE_KEY="ibkr/parquet/${MARKET}/${DATE}.parquet"
-                if ! aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" > /dev/null 2>&1; then
-                  echo "Building missing cache for $MARKET on $DATE"
-                  python build_parquet_cache.py \
-                    --date $DATE \
-                    --market $MARKET \
-                    --bucket $S3_BUCKET \
+              # Use --missing flag for efficient batch checking (2 S3 list ops instead of N head ops)
+              python build_parquet_cache.py \
+                --missing $DAYS_BACK \
+                --market $MARKET \
+                --bucket $S3_BUCKET \
+                $FORCE_FLAG || echo "⚠️  Failed to build cache for $MARKET"
+            done
+          fi
                     $FORCE_FLAG || echo "⚠️  Failed to build cache for $MARKET on $DATE"
                 fi
               done
