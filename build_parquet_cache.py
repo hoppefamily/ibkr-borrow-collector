@@ -174,6 +174,75 @@ class ParquetCacheBuilder:
             logger.error(f"Failed to get metadata for {delta_key}: {e}")
             return None
 
+    def _compute_daily_aggregates(self, df: pd.DataFrame, target_date: date) -> pd.DataFrame:
+        """
+        Compute daily aggregate features from intraday snapshots.
+        
+        Generates one row per symbol with OHLC-style borrow rate aggregates and intraday metrics.
+        
+        Args:
+            df: DataFrame with all intraday snapshots (symbol, timestamp, borrow_rate_annual, 
+                availability, snapshot_time)
+            target_date: The date for the aggregates
+            
+        Returns:
+            DataFrame with daily aggregate rows containing:
+                - borrow_rate_open: First snapshot of day
+                - borrow_rate_close: Last snapshot of day
+                - borrow_rate_high: Maximum during day
+                - borrow_rate_low: Minimum during day
+                - borrow_rate_mean: Time-weighted average
+                - borrow_rate_std: Standard deviation (volatility measure)
+                - intraday_trend: Close - Open (directional pressure)
+                - availability_changes: Count of availability state transitions
+        """
+        aggregates = []
+        
+        for symbol in df['symbol'].unique():
+            symbol_df = df[df['symbol'] == symbol].sort_values('snapshot_time')
+            
+            if len(symbol_df) == 0:
+                continue
+                
+            rates = symbol_df['borrow_rate_annual']
+            avail = symbol_df['availability']
+            
+            # OHLC aggregates
+            borrow_rate_open = rates.iloc[0]
+            borrow_rate_close = rates.iloc[-1]
+            borrow_rate_high = rates.max()
+            borrow_rate_low = rates.min()
+            borrow_rate_mean = rates.mean()
+            borrow_rate_std = rates.std() if len(rates) > 1 else 0.0
+            
+            # Intraday trend (close vs open)
+            intraday_trend = borrow_rate_close - borrow_rate_open
+            
+            # Count availability changes (transitions between states)
+            availability_changes = (avail != avail.shift()).sum() - 1  # -1 to exclude first
+            
+            # Use close values for main fields (most predictive for next day)
+            # but keep the aggregate row marked as aggregate type
+            aggregates.append({
+                'symbol': symbol,
+                'timestamp': target_date,
+                'borrow_rate_annual': borrow_rate_close,  # Close is primary
+                'availability': avail.iloc[-1],  # Last known availability
+                'snapshot_time': symbol_df['snapshot_time'].iloc[-1],  # Mark as EOD
+                # Extended features (daily aggregates)
+                'borrow_rate_open': borrow_rate_open,
+                'borrow_rate_high': borrow_rate_high,
+                'borrow_rate_low': borrow_rate_low,
+                'borrow_rate_mean': borrow_rate_mean,
+                'borrow_rate_std': borrow_rate_std,
+                'intraday_trend': intraday_trend,
+                'availability_changes': int(availability_changes),
+                'snapshot_count': len(symbol_df),  # How many snapshots during day
+                'is_daily_aggregate': True,  # Marker to distinguish from intraday rows
+            })
+        
+        return pd.DataFrame(aggregates)
+
     def list_available_dates(self, market: str = "usa") -> List[date]:
         """List all dates with CSV.gz snapshots."""
         try:
@@ -377,8 +446,21 @@ class ParquetCacheBuilder:
             f"({compression_pct:.1f}% reduction)"
         )
 
+        # Compute daily aggregates per symbol for enhanced features
+        logger.info("Computing daily aggregates from intraday snapshots...")
+        daily_agg_df = self._compute_daily_aggregates(combined_df, target_date)
+        
+        # Combine deduplicated intraday data with daily aggregates
+        # Daily aggregates have a special marker to distinguish them
+        final_df = pd.concat([deduplicated_df, daily_agg_df], ignore_index=True)
+        
+        logger.info(
+            f"Added {len(daily_agg_df):,} daily aggregate rows "
+            f"({len(daily_agg_df['symbol'].unique()):,} symbols)"
+        )
+
         # Write to Parquet
-        self._write_parquet(deduplicated_df, cache_key)
+        self._write_parquet(final_df, cache_key)
 
         return True
 
