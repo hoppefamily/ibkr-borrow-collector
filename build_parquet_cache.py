@@ -177,14 +177,14 @@ class ParquetCacheBuilder:
     def _compute_daily_aggregates(self, df: pd.DataFrame, target_date: date) -> pd.DataFrame:
         """
         Compute daily aggregate features from intraday snapshots.
-        
+
         Generates one row per symbol with OHLC-style borrow rate aggregates and intraday metrics.
-        
+
         Args:
-            df: DataFrame with all intraday snapshots (symbol, timestamp, borrow_rate_annual, 
+            df: DataFrame with all intraday snapshots (symbol, timestamp, borrow_rate_annual,
                 availability, snapshot_time)
             target_date: The date for the aggregates
-            
+
         Returns:
             DataFrame with daily aggregate rows containing:
                 - borrow_rate_open: First snapshot of day
@@ -197,16 +197,16 @@ class ParquetCacheBuilder:
                 - availability_changes: Count of availability state transitions
         """
         aggregates = []
-        
+
         for symbol in df['symbol'].unique():
             symbol_df = df[df['symbol'] == symbol].sort_values('snapshot_time')
-            
+
             if len(symbol_df) == 0:
                 continue
-                
+
             rates = symbol_df['borrow_rate_annual']
             avail = symbol_df['availability']
-            
+
             # OHLC aggregates
             borrow_rate_open = rates.iloc[0]
             borrow_rate_close = rates.iloc[-1]
@@ -214,13 +214,13 @@ class ParquetCacheBuilder:
             borrow_rate_low = rates.min()
             borrow_rate_mean = rates.mean()
             borrow_rate_std = rates.std() if len(rates) > 1 else 0.0
-            
+
             # Intraday trend (close vs open)
             intraday_trend = borrow_rate_close - borrow_rate_open
-            
+
             # Count availability changes (transitions between states)
             availability_changes = (avail != avail.shift()).sum() - 1  # -1 to exclude first
-            
+
             # Use close values for main fields (most predictive for next day)
             # but keep the aggregate row marked as aggregate type
             aggregates.append({
@@ -240,7 +240,7 @@ class ParquetCacheBuilder:
                 'snapshot_count': len(symbol_df),  # How many snapshots during day
                 'is_daily_aggregate': True,  # Marker to distinguish from intraday rows
             })
-        
+
         return pd.DataFrame(aggregates)
 
     def list_available_dates(self, market: str = "usa") -> List[date]:
@@ -329,6 +329,11 @@ class ParquetCacheBuilder:
                     all_objects.extend(page["Contents"])
 
         except Exception as e:
+            error_msg = str(e)
+            # AWS credential expiration is a fatal error - fail immediately
+            if "ExpiredToken" in error_msg or "expired" in error_msg.lower():
+                logger.error(f"FATAL: AWS credentials expired while listing snapshots for {date_str}")
+                raise RuntimeError(f"AWS credentials expired: {e}") from e
             logger.error(f"Failed to list snapshots for {date_str}: {e}")
             return False
 
@@ -382,6 +387,7 @@ class ParquetCacheBuilder:
         # Process deltas (if xdelta3 available)
         if xdelta_available and deltas:
             temp_dir = tempfile.mkdtemp(prefix='parquet_cache_')
+            delta_failures = []
             try:
                 for delta_key in sorted(deltas):
                     try:
@@ -405,7 +411,17 @@ class ParquetCacheBuilder:
                         else:
                             logger.warning(f"  ✗ Failed to reconstruct delta {delta_key}")
 
+                    except ValueError as e:
+                        # Corrupt metadata - this is fatal
+                        if "Corrupt metadata" in str(e):
+                            logger.error(f"FATAL: {e}")
+                            raise
+                        # Other ValueErrors are non-fatal
+                        delta_failures.append((delta_key, str(e)))
+                        logger.warning(f"  ✗ Failed to process delta {delta_key}: {e}")
+                        continue
                     except Exception as e:
+                        delta_failures.append((delta_key, str(e)))
                         logger.warning(f"  ✗ Failed to process delta {delta_key}: {e}")
                         continue
 
@@ -413,6 +429,13 @@ class ParquetCacheBuilder:
                 # Cleanup temp directory
                 import shutil
                 shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            # Report delta processing statistics
+            if delta_failures:
+                logger.warning(
+                    f"Delta processing: {len(deltas) - len(delta_failures)}/{len(deltas)} successful, "
+                    f"{len(delta_failures)} failed"
+                )
 
         if not all_dfs:
             logger.error(f"Failed to read any snapshots for {date_str}")
@@ -449,11 +472,11 @@ class ParquetCacheBuilder:
         # Compute daily aggregates per symbol for enhanced features
         logger.info("Computing daily aggregates from intraday snapshots...")
         daily_agg_df = self._compute_daily_aggregates(combined_df, target_date)
-        
+
         # Combine deduplicated intraday data with daily aggregates
         # Daily aggregates have a special marker to distinguish them
         final_df = pd.concat([deduplicated_df, daily_agg_df], ignore_index=True)
-        
+
         logger.info(
             f"Added {len(daily_agg_df):,} daily aggregate rows "
             f"({len(daily_agg_df['symbol'].unique()):,} symbols)"
@@ -755,6 +778,7 @@ def main():
     success_count = 0
     skip_count = 0
     fail_count = 0
+    failed_dates = []
 
     for i, target_date in enumerate(dates, 1):
         logger.info(f"[{i}/{len(dates)}] Processing {target_date}")
@@ -769,9 +793,16 @@ def main():
                 success_count += 1
             else:
                 skip_count += 1
+        except RuntimeError as e:
+            # Fatal errors like AWS token expiration - fail immediately
+            logger.error(f"FATAL: {e}")
+            fail_count += 1
+            failed_dates.append(target_date)
+            break
         except Exception as e:
             logger.error(f"Failed to build cache for {target_date}: {e}")
             fail_count += 1
+            failed_dates.append(target_date)
 
     # Summary
     logger.info("")
@@ -782,6 +813,8 @@ def main():
     logger.info(f"✓ Built: {success_count}")
     logger.info(f"○ Skipped: {skip_count}")
     logger.info(f"✗ Failed: {fail_count}")
+    if failed_dates:
+        logger.error(f"Failed dates: {', '.join(str(d) for d in failed_dates)}")
 
     return 0 if fail_count == 0 else 1
 
