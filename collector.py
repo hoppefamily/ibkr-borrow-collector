@@ -286,7 +286,7 @@ class S3Uploader:
 
     def upload_file(self, local_path: str, s3_key: str, metadata: Optional[Dict] = None) -> bool:
         """Upload file to S3 with metadata.
-        
+
         Uses conditional upload to prevent overwriting if file already exists,
         avoiding race conditions when multiple collectors run simultaneously.
         """
@@ -707,9 +707,8 @@ def process_file_with_ftp(args_tuple):
         ftp.connect(timeout=60)
         s3 = S3Uploader(s3_bucket)
 
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Processing {file_type}: {filename}")
-        logger.info(f"{'='*60}")
+        # Use concise logging prefix for parallel execution
+        logger.info(f"[{filename}] Starting processing...")
 
         success = process_file(
             ftp, s3, collector_logger,
@@ -718,9 +717,15 @@ def process_file_with_ftp(args_tuple):
             xdelta_available=xdelta_available,
             cache_dir=cache_dir
         )
+        
+        if success:
+            logger.info(f"[{filename}] ✓ Completed successfully")
+        else:
+            logger.warning(f"[{filename}] ✗ Processing failed")
+        
         return (filename, success)
     except Exception as e:
-        logger.error(f"Error processing {filename}: {e}")
+        logger.error(f"[{filename}] Error: {e}")
         return (filename, False)
     finally:
         ftp.close()
@@ -889,12 +894,12 @@ def main():
                     if ftp.download_file(f"{filename}.md5", local_checksum):
                         MD5Verifier.verify(local_file, local_checksum)
                     logger.info("✓ Dry run - skipping upload")
-            
+
             ftp.close()
         else:
             # Production: parallel processing for speed
             s3_prefix = f"{args.s3_prefix}/{date_str}"
-            
+
             # Prepare task arguments for all files
             tasks = []
             for filename in borrow_files:
@@ -905,7 +910,7 @@ def main():
                     args.force_upload, xdelta_available, cache_dir,
                     collector_logger
                 ))
-            
+
             for filename in margin_files:
                 tasks.append((
                     args.ftp_host, args.ftp_user, args.ftp_pass,
@@ -914,23 +919,39 @@ def main():
                     args.force_upload, xdelta_available, cache_dir,
                     collector_logger
                 ))
-            
+
             # Close initial FTP connection (each thread creates its own)
             ftp.close()
-            
+
             # Process files in parallel with max 6 workers
-            logger.info(f"\nProcessing {len(tasks)} files in parallel (max 6 concurrent)...")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Processing {len(tasks)} files in parallel (max 6 workers)")
+            logger.info(f"{'='*60}\n")
+            
+            completed = 0
+            failed = 0
             with ThreadPoolExecutor(max_workers=6) as executor:
                 futures = [executor.submit(process_file_with_ftp, task) for task in tasks]
                 
                 for future in as_completed(futures):
                     try:
                         filename, success = future.result()
+                        completed += 1
+                        if not success:
+                            failed += 1
+                        
+                        # Progress indicator
+                        progress = f"[{completed}/{len(tasks)}]"
                         status = "✓" if success else "✗"
-                        logger.info(f"{status} Completed: {filename}")
+                        logger.info(f"{progress} {status} {filename}")
                     except Exception as e:
-                        logger.error(f"Task failed with exception: {e}")
-
+                        completed += 1
+                        failed += 1
+                        logger.error(f"[{completed}/{len(tasks)}] Task exception: {e}")
+            
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Parallel processing complete: {completed - failed}/{completed} successful")
+            logger.info(f"{'='*60}")
         # Xdelta3 status for logs
         xdelta_status = "✓ Available" if xdelta_available else "✗ Not Available"
 
