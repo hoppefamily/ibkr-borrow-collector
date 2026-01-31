@@ -82,6 +82,7 @@ python3 -c "import boto3; print(f'boto3 {boto3.__version__}')"
 **Parquet cache layer (NEW):**
 - Daily consolidated snapshots (1 file vs 96+ CSV.gz files)
 - **Smart deduplication**: Only stores rows where borrow rates/availability changed (82-85% reduction)
+- **Intraday granularity**: 96 snapshots/day enables time-of-day analysis, spike detection, and velocity calculations (vs single EOD snapshot)
 - **Normalized schema**: Standardized column names (`symbol`, `borrow_rate_annual` vs raw `SYM`, `FEERATE`)
 - **Type-safe**: Proper datetime, float64, int64 types (no string parsing needed)
 - 10-20x faster queries (2-5s vs 30-60s for same day analysis)
