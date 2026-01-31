@@ -38,6 +38,11 @@ on:
         type: boolean
         default: false
 
+# Prevent concurrent cache building to avoid race conditions and AWS credential conflicts
+concurrency:
+  group: parquet-cache-builder
+  cancel-in-progress: false
+
 # Required for OIDC authentication
 permissions:
   id-token: write

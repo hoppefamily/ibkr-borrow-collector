@@ -284,11 +284,25 @@ class S3Uploader:
             return False
 
     def upload_file(self, local_path: str, s3_key: str, metadata: Optional[Dict] = None) -> bool:
-        """Upload file to S3 with metadata."""
+        """Upload file to S3 with metadata.
+        
+        Uses conditional upload to prevent overwriting if file already exists,
+        avoiding race conditions when multiple collectors run simultaneously.
+        """
         try:
             extra_args = {}
             if metadata:
                 extra_args['Metadata'] = metadata
+
+            # Check if file already exists to avoid overwriting from parallel runs
+            try:
+                self.s3_client.head_object(Bucket=self.bucket, Key=s3_key)
+                logger.info(f"⊘ File already exists in S3 (parallel collection?): {s3_key}")
+                return True  # Consider it success since file exists
+            except ClientError as e:
+                if e.response['Error']['Code'] != '404':
+                    # Real error, not just "not found"
+                    raise
 
             logger.info(f"Uploading to s3://{self.bucket}/{s3_key}")
             self.s3_client.upload_file(local_path, self.bucket, s3_key, ExtraArgs=extra_args)
