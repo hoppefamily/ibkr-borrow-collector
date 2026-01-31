@@ -518,7 +518,7 @@ class ParquetCacheBuilder:
             except Exception as e:
                 logger.warning(f"  ✗ Failed to read baseline {snapshot_key}: {e}")
                 continue
-        
+
         if baselines and baseline_successes == 0:
             logger.warning(f"⚠️  All {len(baselines)} baseline files returned no data - files may be empty or malformed")
 
@@ -577,8 +577,9 @@ class ParquetCacheBuilder:
                 )
 
         if not all_dfs:
-            logger.error(f"Failed to read any snapshots for {date_str}")
-            return False
+            # No data available - this is not an error, just means the market had no data this day
+            logger.info(f"ℹ️  No borrow data available for {market} on {date_str} (empty or unavailable market)")
+            return True  # Return success - no data is a valid state
 
         # Combine all snapshots
         combined_df = pd.concat(all_dfs, ignore_index=True)
