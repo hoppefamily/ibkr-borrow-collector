@@ -2,9 +2,9 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE-2.0)
 
-**Real-time borrow fee tracking for 17,000+ global securities**
+**Real-time borrow fee tracking for 15,000+ global securities**
 
-Automated collection of Interactive Brokers' short-sale borrow rates and margin requirements across 18 global markets. Essential data infrastructure for flow trading analysis and short squeeze detection.
+Automated collection of Interactive Brokers' short-sale borrow rates and margin requirements across 16 active global markets. Essential data infrastructure for flow trading analysis and short squeeze detection.
 
 ## Why This Exists
 
@@ -16,10 +16,13 @@ Automated collection of Interactive Brokers' short-sale borrow rates and margin 
 
 Yet this data is scattered, delayed, and often paywalled. This collector makes it:
 - ✅ **Free & open source**
-- ✅ **Real-time** (15-minute updates, 24/7 collection)
-- ✅ **Comprehensive** (18 markets: USA, UK, Germany, Switzerland, Italy, Japan, Hong Kong, Australia, Austria, Belgium, Canada, Netherlands, France, Mexico, Spain, Sweden, Singapore, India)
-- ✅ **Efficient** (98% compression via delta encoding)
+- ✅ **Real-time** (15-minute updates, 24/7 collection with parallel processing)
+- ✅ **Comprehensive** (16 active markets: USA, UK, Germany, Switzerland, Italy, Japan, Hong Kong, Australia, Austria, Belgium, Canada, Netherlands, France, Mexico, Spain, Sweden)
+- ✅ **Efficient** (98% compression via delta encoding, skips empty markets)
+- ✅ **Fast collection** (parallel FTP downloads, 3-4x faster than sequential)
 - ✅ **Fast analytics** (Parquet cache layer for 10-20x faster queries)
+
+**Note:** India and Singapore are monitored but currently have no borrow data from IBKR.
 
 ## Prerequisites
 
@@ -83,10 +86,11 @@ python3 -c "import boto3; print(f'boto3 {boto3.__version__}')"
 - Automatic daily rebuilds at 02:30 UTC
 - Snappy compression + PyArrow compatibility
 
-**Storage cost:** ~$0.20/month for complete global coverage
-**Data volume:** 18 borrow markets + 8 margin markets
+**Storage cost:** ~$0.15/month for complete global coverage (empty markets skipped)
+**Data volume:** 16 active borrow markets + 8 margin markets
 **Frequency:** 96 snapshots/day, 98% delta compression + 82% deduplication in Parquet
 **Collection schedule:** 24/7 continuous (since 2026-01-17)
+**Performance:** Parallel processing (6 concurrent workers), ~30-40s per collection run
 
 ## Quick Start
 
