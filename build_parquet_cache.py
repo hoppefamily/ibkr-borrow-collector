@@ -505,17 +505,22 @@ class ParquetCacheBuilder:
         all_dfs = []
 
         # Process baselines
+        baseline_successes = 0
         for snapshot_key in sorted(baselines):
             try:
                 df = self._read_snapshot(snapshot_key, target_date)
                 if df is not None and not df.empty:
                     all_dfs.append(df)
+                    baseline_successes += 1
                     logger.debug(f"  ✓ Read {len(df):,} rows from baseline {Path(snapshot_key).name}")
                 else:
-                    logger.debug(f"  ○ Baseline {Path(snapshot_key).name} returned no data")
+                    logger.info(f"  ○ Baseline {Path(snapshot_key).name} returned no data")
             except Exception as e:
                 logger.warning(f"  ✗ Failed to read baseline {snapshot_key}: {e}")
                 continue
+        
+        if baselines and baseline_successes == 0:
+            logger.warning(f"⚠️  All {len(baselines)} baseline files returned no data - files may be empty or malformed")
 
         # Process deltas (if xdelta3 available)
         if xdelta_available and deltas:
