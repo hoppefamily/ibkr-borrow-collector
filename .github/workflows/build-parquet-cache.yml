@@ -6,10 +6,32 @@ on:
     - cron: '30 0 * * *'
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'Build mode: single (one date), missing (all missing), range (date range)'
+        required: false
+        type: choice
+        options:
+          - single
+          - missing
+          - range
+        default: missing
       date:
-        description: 'Date to build cache for (YYYY-MM-DD, leave empty for yesterday)'
+        description: 'Date for single mode (YYYY-MM-DD, leave empty for yesterday)'
         required: false
         type: string
+      start_date:
+        description: 'Start date for range mode (YYYY-MM-DD)'
+        required: false
+        type: string
+      end_date:
+        description: 'End date for range mode (YYYY-MM-DD)'
+        required: false
+        type: string
+      days_back:
+        description: 'For missing mode: how many days back to check (default: 30)'
+        required: false
+        type: number
+        default: 30
       force:
         description: 'Force rebuild even if cache exists'
         required: false
@@ -52,17 +74,7 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
           role-session-name: GitHubActions-ParquetCache
 
-      - name: Determine target date
-        id: date
-        run: |
-          if [ -n "${{ inputs.date }}" ]; then
-            echo "target_date=${{ inputs.date }}" >> $GITHUB_OUTPUT
-          else
-            # Use yesterday's date (data collection completes at ~02:00 UTC)
-            echo "target_date=$(date -u -d yesterday +%Y-%m-%d)" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build Parquet cache
+      - name: Build Parquet caches
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
@@ -71,34 +83,106 @@ jobs:
             FORCE_FLAG="--force"
           fi
 
-          # Build caches for all major markets
           MARKETS="usa germany british swiss dutch france italy spain austria belgium hongkong japan swedish australia canada mexico india singapore"
+          MODE="${{ inputs.mode }}"
+          MODE="${MODE:-missing}"  # Default to missing mode
+          
+          echo "=========================================="
+          echo "Build Mode: $MODE"
+          echo "=========================================="
 
-          for MARKET in $MARKETS; do
-            echo "Building cache for market: $MARKET"
-            python build_parquet_cache.py \
-              --date ${{ steps.date.outputs.target_date }} \
-              --market $MARKET \
-              --bucket $S3_BUCKET \
-              $FORCE_FLAG || echo "⚠️  Failed to build cache for $MARKET (may have no data)"
-          done
+          if [ "$MODE" = "single" ]; then
+            # Single date mode
+            if [ -n "${{ inputs.date }}" ]; then
+              TARGET_DATE="${{ inputs.date }}"
+            else
+              TARGET_DATE=$(date -u -d yesterday +%Y-%m-%d)
+            fi
+            
+            echo "Building caches for date: $TARGET_DATE"
+            
+            for MARKET in $MARKETS; do
+              echo "Building cache for market: $MARKET"
+              python build_parquet_cache.py \
+                --date $TARGET_DATE \
+                --market $MARKET \
+                --bucket $S3_BUCKET \
+                $FORCE_FLAG || echo "⚠️  Failed to build cache for $MARKET"
+            done
 
-      - name: Verify caches were created
+          elif [ "$MODE" = "range" ]; then
+            # Date range mode
+            START_DATE="${{ inputs.start_date }}"
+            END_DATE="${{ inputs.end_date }}"
+            
+            if [ -z "$START_DATE" ] || [ -z "$END_DATE" ]; then
+              echo "❌ Error: start_date and end_date required for range mode"
+              exit 1
+            fi
+            
+            echo "Building caches for range: $START_DATE to $END_DATE"
+            
+            for MARKET in $MARKETS; do
+              echo ""
+              echo "Building cache for market: $MARKET ($START_DATE to $END_DATE)"
+              python build_parquet_cache.py \
+                --start $START_DATE \
+                --end $END_DATE \
+                --market $MARKET \
+                --bucket $S3_BUCKET \
+                $FORCE_FLAG || echo "⚠️  Failed to build cache for $MARKET"
+            done
+
+          else
+            # Missing mode (default) - build all missing caches
+            DAYS_BACK="${{ inputs.days_back }}"
+            DAYS_BACK="${DAYS_BACK:-30}"
+            
+            START_DATE=$(date -u -d "$DAYS_BACK days ago" +%Y-%m-%d)
+            END_DATE=$(date -u -d yesterday +%Y-%m-%d)
+            
+            echo "Checking for missing caches from $START_DATE to $END_DATE"
+            
+            for MARKET in $MARKETS; do
+              echo ""
+              echo "=== $MARKET ==="
+              
+              # Get list of dates with raw data
+              RAW_DATES=$(aws s3 ls "s3://${S3_BUCKET}/ibkr/borrow/" | grep "PRE" | awk '{print $2}' | tr -d '/' | while read date; do
+                if [[ "$date" > "$START_DATE" || "$date" == "$START_DATE" ]] && [[ "$date" < "$END_DATE" || "$date" == "$END_DATE" ]]; then
+                  echo $date
+                fi
+              done)
+              
+              # Check each date for missing cache
+              for DATE in $RAW_DATES; do
+                CACHE_KEY="ibkr/parquet/${MARKET}/${DATE}.parquet"
+                if ! aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" > /dev/null 2>&1; then
+                  echo "Building missing cache for $MARKET on $DATE"
+                  python build_parquet_cache.py \
+                    --date $DATE \
+                    --market $MARKET \
+                    --bucket $S3_BUCKET \
+                    $FORCE_FLAG || echo "⚠️  Failed to build cache for $MARKET on $DATE"
+                fi
+              done
+            done
+          fi
+
+      - name: Summary
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
-          TARGET_DATE=${{ steps.date.outputs.target_date }}
+          echo ""
+          echo "=========================================="
+          echo "CACHE SUMMARY"
+          echo "=========================================="
+          
           MARKETS="usa germany british swiss dutch france italy spain austria belgium hongkong japan swedish australia canada mexico india singapore"
-
-          echo "Verifying caches for ${TARGET_DATE}:"
+          
           for MARKET in $MARKETS; do
-            CACHE_KEY="ibkr/parquet/${MARKET}/${TARGET_DATE}.parquet"
-            if aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" > /dev/null 2>&1; then
-              SIZE=$(aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" | awk '{print $3}')
-              echo "✅ $MARKET: $(numfmt --to=iec-i --suffix=B $SIZE)"
-            else
-              echo "⚠️  $MARKET: No cache (likely holiday/no trading data)"
-            fi
+            COUNT=$(aws s3 ls "s3://${S3_BUCKET}/ibkr/parquet/${MARKET}/" --recursive | wc -l)
+            echo "$MARKET: $COUNT parquet files"
           done
 
       - name: List recent caches
