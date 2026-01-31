@@ -157,11 +157,6 @@ jobs:
                 $FORCE_FLAG || echo "⚠️  Failed to build cache for $MARKET"
             done
           fi
-                    $FORCE_FLAG || echo "⚠️  Failed to build cache for $MARKET on $DATE"
-                fi
-              done
-            done
-          fi
 
       - name: Summary
         env:
