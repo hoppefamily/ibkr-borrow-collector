@@ -915,41 +915,41 @@ def main():
             return 0
 
         logger.info(f"Found {len(dates)} missing caches")
-        
+
         # For India and Singapore: check latest day first to avoid wasting time
         # These markets often have no borrow data
         if args.market in ['india', 'singapore'] and dates:
             latest_date = max(dates)
             logger.info(f"Checking if {args.market} has data (testing {latest_date})...")
-            
+
             # Try to list snapshots for the latest date
             date_str = latest_date.strftime('%Y-%m-%d')
             source_path = f"{builder._source_prefix}/{date_str}"
-            
+
             try:
                 response = builder._s3.list_objects_v2(
                     Bucket=builder._bucket,
                     Prefix=source_path,
                     MaxKeys=100
                 )
-                
+
                 all_objects = response.get("Contents", [])
                 market_files = [
-                    obj for obj in all_objects 
-                    if f"/{args.market}-" in obj["Key"] and 
+                    obj for obj in all_objects
+                    if f"/{args.market}-" in obj["Key"] and
                        (obj["Key"].endswith(".txt.gz") or obj["Key"].endswith(".xdelta"))
                 ]
-                
+
                 if not market_files:
                     logger.info(f"✓ {args.market} has no data on {latest_date}, skipping entire market")
                     return 0
                 else:
                     logger.info(f"✓ {args.market} has {len(market_files)} files on {latest_date}, continuing...")
-            
+
             except Exception as e:
                 logger.warning(f"Could not check {args.market} data availability: {e}")
                 # Continue anyway if check fails
-    
+
     elif args.date:
         dates = [args.date]
     elif args.start and args.end:
