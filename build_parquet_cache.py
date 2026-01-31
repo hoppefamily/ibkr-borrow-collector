@@ -99,6 +99,11 @@ class ParquetCacheBuilder:
             Path to reconstructed file, or None if failed
         """
         try:
+            # Validate baseline_key points to a gzipped file
+            if not baseline_key.endswith('.txt.gz') and not baseline_key.endswith('.dat.gz'):
+                logger.error(f"Invalid baseline key (must be .txt.gz or .dat.gz): {baseline_key}")
+                return None
+
             # Download baseline
             baseline_gz_path = f"{temp_dir}/baseline.txt.gz"
             baseline_path = f"{temp_dir}/baseline.txt"
