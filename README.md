@@ -2,7 +2,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE-2.0)
 
-**Real-time borrow fee tracking for 15,000+ global securities**
+**Intraday borrow fee tracking for 15,000+ global securities**
 
 Automated collection of Interactive Brokers' short-sale borrow rates and margin requirements across 16 active global markets. Essential data infrastructure for flow trading analysis and short squeeze detection.
 
@@ -16,7 +16,7 @@ Automated collection of Interactive Brokers' short-sale borrow rates and margin 
 
 Yet this data is scattered, delayed, and often paywalled. This collector makes it:
 - ✅ **Free & open source**
-- ✅ **Real-time** (15-minute updates, 24/7 collection with parallel processing)
+- ✅ **Intraday updates** (15-minute intervals, 24/7 collection with parallel processing)
 - ✅ **Comprehensive** (16 active markets: USA, UK, Germany, Switzerland, Italy, Japan, Hong Kong, Australia, Austria, Belgium, Canada, Netherlands, France, Mexico, Spain, Sweden)
 - ✅ **Efficient** (98% compression via delta encoding, skips empty markets)
 - ✅ **Fast collection** (parallel FTP downloads, 3-4x faster than sequential)
