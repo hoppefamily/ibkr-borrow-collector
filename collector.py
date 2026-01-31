@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -156,7 +157,7 @@ class FileCompressor:
     """Compress files with gzip."""
 
     @staticmethod
-    def compress(input_path: str, output_path: Optional[str] = None, level: int = 9) -> str:
+    def compress(input_path: str, output_path: Optional[str] = None, level: int = 6) -> str:
         """Compress file with gzip at specified level."""
         if output_path is None:
             output_path = f"{input_path}.gz"
@@ -690,6 +691,41 @@ def reconstruct_snapshot(s3_bucket: str, s3_key: str, output_file: str, cache_di
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def process_file_with_ftp(args_tuple):
+    """Wrapper for parallel processing - creates its own FTP connection."""
+    (
+        ftp_host, ftp_user, ftp_pass,
+        s3_bucket, s3_prefix, temp_dir,
+        filename, file_type,
+        force_upload, xdelta_available, cache_dir,
+        collector_logger
+    ) = args_tuple
+
+    # Create dedicated FTP connection for this thread
+    ftp = FTPDownloader(ftp_host, ftp_user, ftp_pass)
+    try:
+        ftp.connect(timeout=60)
+        s3 = S3Uploader(s3_bucket)
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Processing {file_type}: {filename}")
+        logger.info(f"{'='*60}")
+
+        success = process_file(
+            ftp, s3, collector_logger,
+            filename, file_type, s3_prefix, temp_dir,
+            force_upload=force_upload,
+            xdelta_available=xdelta_available,
+            cache_dir=cache_dir
+        )
+        return (filename, success)
+    except Exception as e:
+        logger.error(f"Error processing {filename}: {e}")
+        return (filename, False)
+    finally:
+        ftp.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description='IBKR FTP Data Collector')
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
@@ -828,14 +864,12 @@ def main():
         # Initialize S3 uploader (unless dry run)
         s3 = None if args.dry_run else S3Uploader(args.s3_bucket)
 
-        # Process borrow rate files (.txt)
-        for filename in borrow_files:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Processing borrow rates: {filename}")
-            logger.info(f"{'='*60}")
-
-            if args.dry_run:
-                # Just download and verify
+        if args.dry_run:
+            # Dry run: sequential processing for simplicity
+            for filename in borrow_files:
+                logger.info(f"\n{'='*60}")
+                logger.info(f"Processing borrow rates: {filename}")
+                logger.info(f"{'='*60}")
                 local_file = os.path.join(temp_dir, filename)
                 local_checksum = os.path.join(temp_dir, f"{filename}.md5")
 
@@ -843,24 +877,11 @@ def main():
                     if ftp.download_file(f"{filename}.md5", local_checksum):
                         MD5Verifier.verify(local_file, local_checksum)
                     logger.info("✓ Dry run - skipping upload")
-            else:
-                s3_prefix = f"{args.s3_prefix}/{date_str}"
-                process_file(
-                    ftp, s3, collector_logger,
-                    filename, 'borrow', s3_prefix, temp_dir,
-                    force_upload=args.force_upload,
-                    xdelta_available=xdelta_available,
-                    cache_dir=cache_dir
-                )
 
-        # Process margin requirement files (.dat)
-        for filename in margin_files:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Processing margin requirements: {filename}")
-            logger.info(f"{'='*60}")
-
-            if args.dry_run:
-                # Just download and verify
+            for filename in margin_files:
+                logger.info(f"\n{'='*60}")
+                logger.info(f"Processing margin requirements: {filename}")
+                logger.info(f"{'='*60}")
                 local_file = os.path.join(temp_dir, filename)
                 local_checksum = os.path.join(temp_dir, f"{filename}.md5")
 
@@ -868,18 +889,47 @@ def main():
                     if ftp.download_file(f"{filename}.md5", local_checksum):
                         MD5Verifier.verify(local_file, local_checksum)
                     logger.info("✓ Dry run - skipping upload")
-            else:
-                s3_prefix = f"{args.s3_prefix}/{date_str}"
-                process_file(
-                    ftp, s3, collector_logger,
-                    filename, 'margin', s3_prefix, temp_dir,
-                    force_upload=args.force_upload,
-                    xdelta_available=xdelta_available,
-                    cache_dir=cache_dir
-                )
-
-        # Close FTP
-        ftp.close()
+            
+            ftp.close()
+        else:
+            # Production: parallel processing for speed
+            s3_prefix = f"{args.s3_prefix}/{date_str}"
+            
+            # Prepare task arguments for all files
+            tasks = []
+            for filename in borrow_files:
+                tasks.append((
+                    args.ftp_host, args.ftp_user, args.ftp_pass,
+                    args.s3_bucket, s3_prefix, temp_dir,
+                    filename, 'borrow',
+                    args.force_upload, xdelta_available, cache_dir,
+                    collector_logger
+                ))
+            
+            for filename in margin_files:
+                tasks.append((
+                    args.ftp_host, args.ftp_user, args.ftp_pass,
+                    args.s3_bucket, s3_prefix, temp_dir,
+                    filename, 'margin',
+                    args.force_upload, xdelta_available, cache_dir,
+                    collector_logger
+                ))
+            
+            # Close initial FTP connection (each thread creates its own)
+            ftp.close()
+            
+            # Process files in parallel with max 6 workers
+            logger.info(f"\nProcessing {len(tasks)} files in parallel (max 6 concurrent)...")
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures = [executor.submit(process_file_with_ftp, task) for task in tasks]
+                
+                for future in as_completed(futures):
+                    try:
+                        filename, success = future.result()
+                        status = "✓" if success else "✗"
+                        logger.info(f"{status} Completed: {filename}")
+                    except Exception as e:
+                        logger.error(f"Task failed with exception: {e}")
 
         # Xdelta3 status for logs
         xdelta_status = "✓ Available" if xdelta_available else "✗ Not Available"
