@@ -71,30 +71,43 @@ jobs:
             FORCE_FLAG="--force"
           fi
 
-          python build_parquet_cache.py \
-            --date ${{ steps.date.outputs.target_date }} \
-            --bucket $S3_BUCKET \
-            $FORCE_FLAG
+          # Build caches for all major markets
+          MARKETS="usa germany british swiss dutch france italy spain austria belgium hongkong japan swedish australia canada mexico india singapore"
 
-      - name: Verify cache was created
+          for MARKET in $MARKETS; do
+            echo "Building cache for market: $MARKET"
+            python build_parquet_cache.py \
+              --date ${{ steps.date.outputs.target_date }} \
+              --market $MARKET \
+              --bucket $S3_BUCKET \
+              $FORCE_FLAG || echo "⚠️  Failed to build cache for $MARKET (may have no data)"
+          done
+
+      - name: Verify caches were created
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
           TARGET_DATE=${{ steps.date.outputs.target_date }}
-          CACHE_KEY="ibkr/parquet/usa/${TARGET_DATE}.parquet"
+          MARKETS="usa germany british swiss dutch france italy spain austria belgium hongkong japan swedish australia canada mexico india singapore"
 
-          if aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" > /dev/null 2>&1; then
-            echo "✅ Cache verified: s3://${S3_BUCKET}/${CACHE_KEY}"
-            SIZE=$(aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" | awk '{print $3}')
-            echo "   Size: $(numfmt --to=iec-i --suffix=B $SIZE)"
-          else
-            echo "⚠️  No cache created for ${TARGET_DATE} (likely holiday/weekend with no trading data)"
-            echo "   This is expected behavior - workflow continues successfully"
-          fi
+          echo "Verifying caches for ${TARGET_DATE}:"
+          for MARKET in $MARKETS; do
+            CACHE_KEY="ibkr/parquet/${MARKET}/${TARGET_DATE}.parquet"
+            if aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" > /dev/null 2>&1; then
+              SIZE=$(aws s3 ls "s3://${S3_BUCKET}/${CACHE_KEY}" | awk '{print $3}')
+              echo "✅ $MARKET: $(numfmt --to=iec-i --suffix=B $SIZE)"
+            else
+              echo "⚠️  $MARKET: No cache (likely holiday/no trading data)"
+            fi
+          done
 
       - name: List recent caches
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
-          echo "Recent Parquet caches:"
-          aws s3 ls "s3://${S3_BUCKET}/ibkr/parquet/usa/" --recursive --human-readable | tail -10
+          echo "Recent Parquet caches by market:"
+          for MARKET in usa germany british swiss dutch france italy spain austria belgium hongkong japan swedish australia canada mexico india singapore; do
+            echo ""
+            echo "=== $MARKET ==="
+            aws s3 ls "s3://${S3_BUCKET}/ibkr/parquet/${MARKET}/" --recursive --human-readable | tail -5 || echo "No caches found"
+          done
