@@ -98,12 +98,13 @@ class ParquetCacheBuilder:
         Returns:
             Path to reconstructed file, or None if failed
         """
-        try:
-            # Validate baseline_key points to a gzipped file
-            if not baseline_key.endswith('.txt.gz') and not baseline_key.endswith('.dat.gz'):
-                logger.error(f"Invalid baseline key (must be .txt.gz or .dat.gz): {baseline_key}")
-                return None
+        # Validate baseline_key points to a gzipped file
+        if not baseline_key.endswith('.txt.gz') and not baseline_key.endswith('.dat.gz'):
+            logger.error(f"CORRUPT METADATA: Delta {delta_key} has invalid baseline key: {baseline_key}")
+            logger.error(f"Expected .txt.gz or .dat.gz file, but got: {baseline_key}")
+            raise ValueError(f"Corrupt metadata in delta file {delta_key}: baseline_key={baseline_key}")
 
+        try:
             # Download baseline
             baseline_gz_path = f"{temp_dir}/baseline.txt.gz"
             baseline_path = f"{temp_dir}/baseline.txt"
@@ -364,7 +365,7 @@ class ParquetCacheBuilder:
             (combined_df['borrow_rate_annual'] != combined_df.groupby('symbol')['borrow_rate_annual'].shift()) |
             (combined_df['availability'] != combined_df.groupby('symbol')['availability'].shift())
         )
-        
+
         deduplicated_df = combined_df[changed_mask].copy()
 
         rows_before = len(combined_df)
