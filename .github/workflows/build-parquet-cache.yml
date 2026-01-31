@@ -86,7 +86,7 @@ jobs:
           MARKETS="usa germany british swiss dutch france italy spain austria belgium hongkong japan swedish australia canada mexico india singapore"
           MODE="${{ inputs.mode }}"
           MODE="${MODE:-missing}"  # Default to missing mode
-          
+
           echo "=========================================="
           echo "Build Mode: $MODE"
           echo "=========================================="
@@ -98,9 +98,9 @@ jobs:
             else
               TARGET_DATE=$(date -u -d yesterday +%Y-%m-%d)
             fi
-            
+
             echo "Building caches for date: $TARGET_DATE"
-            
+
             for MARKET in $MARKETS; do
               echo "Building cache for market: $MARKET"
               python build_parquet_cache.py \
@@ -114,14 +114,14 @@ jobs:
             # Date range mode
             START_DATE="${{ inputs.start_date }}"
             END_DATE="${{ inputs.end_date }}"
-            
+
             if [ -z "$START_DATE" ] || [ -z "$END_DATE" ]; then
               echo "❌ Error: start_date and end_date required for range mode"
               exit 1
             fi
-            
+
             echo "Building caches for range: $START_DATE to $END_DATE"
-            
+
             for MARKET in $MARKETS; do
               echo ""
               echo "Building cache for market: $MARKET ($START_DATE to $END_DATE)"
@@ -137,23 +137,23 @@ jobs:
             # Missing mode (default) - build all missing caches
             DAYS_BACK="${{ inputs.days_back }}"
             DAYS_BACK="${DAYS_BACK:-30}"
-            
+
             START_DATE=$(date -u -d "$DAYS_BACK days ago" +%Y-%m-%d)
             END_DATE=$(date -u -d yesterday +%Y-%m-%d)
-            
+
             echo "Checking for missing caches from $START_DATE to $END_DATE"
-            
+
             for MARKET in $MARKETS; do
               echo ""
               echo "=== $MARKET ==="
-              
+
               # Get list of dates with raw data
               RAW_DATES=$(aws s3 ls "s3://${S3_BUCKET}/ibkr/borrow/" | grep "PRE" | awk '{print $2}' | tr -d '/' | while read date; do
                 if [[ "$date" > "$START_DATE" || "$date" == "$START_DATE" ]] && [[ "$date" < "$END_DATE" || "$date" == "$END_DATE" ]]; then
                   echo $date
                 fi
               done)
-              
+
               # Check each date for missing cache
               for DATE in $RAW_DATES; do
                 CACHE_KEY="ibkr/parquet/${MARKET}/${DATE}.parquet"
@@ -177,9 +177,9 @@ jobs:
           echo "=========================================="
           echo "CACHE SUMMARY"
           echo "=========================================="
-          
+
           MARKETS="usa germany british swiss dutch france italy spain austria belgium hongkong japan swedish australia canada mexico india singapore"
-          
+
           for MARKET in $MARKETS; do
             COUNT=$(aws s3 ls "s3://${S3_BUCKET}/ibkr/parquet/${MARKET}/" --recursive | wc -l)
             echo "$MARKET: $COUNT parquet files"
