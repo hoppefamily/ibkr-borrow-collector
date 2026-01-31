@@ -59,6 +59,58 @@ class ParquetCacheBuilder:
         self._bucket = bucket
         self._source_prefix = source_prefix.rstrip("/")
         self._cache_prefix = cache_prefix.rstrip("/")
+        self._session = boto3.Session()  # Keep session for credential refresh
+
+    def _refresh_credentials(self):
+        """Refresh AWS credentials by creating a new session and S3 client."""
+        logger.info("Refreshing AWS credentials...")
+        try:
+            self._session = boto3.Session()
+            self._s3 = self._session.client('s3')
+            logger.info("✓ AWS credentials refreshed successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to refresh credentials: {e}")
+            return False
+
+    def _s3_operation_with_retry(self, operation_name: str, max_retries: int = 2, **kwargs):
+        """
+        Execute an S3 operation with automatic credential refresh on expiration.
+        
+        Args:
+            operation_name: Name of the S3 client method (e.g., 'get_object', 'put_object')
+            max_retries: Maximum number of credential refresh retries
+            **kwargs: Arguments to pass to the S3 operation
+            
+        Returns:
+            Result of the S3 operation
+        """
+        retry_count = 0
+        
+        while retry_count <= max_retries:
+            try:
+                operation = getattr(self._s3, operation_name)
+                return operation(**kwargs)
+                
+            except Exception as e:
+                error_msg = str(e)
+                # AWS credential expiration - try to refresh and retry
+                if "ExpiredToken" in error_msg or "expired" in error_msg.lower():
+                    if retry_count < max_retries:
+                        logger.warning(f"AWS credentials expired during {operation_name} (attempt {retry_count + 1}/{max_retries + 1})")
+                        if self._refresh_credentials():
+                            retry_count += 1
+                            logger.info(f"Retrying {operation_name}...")
+                            continue
+                        else:
+                            logger.error("Failed to refresh credentials")
+                            raise RuntimeError(f"AWS credentials expired and refresh failed during {operation_name}: {e}") from e
+                    else:
+                        logger.error(f"FATAL: AWS credentials expired after {max_retries} refresh attempts")
+                        raise RuntimeError(f"AWS credentials expired after {max_retries} retries during {operation_name}: {e}") from e
+                
+                # Other errors - re-raise immediately
+                raise
 
     def get_cache_key(self, market: str, target_date: date) -> str:
         """Get S3 key for cached Parquet file."""
@@ -68,7 +120,7 @@ class ParquetCacheBuilder:
         """Check if Parquet cache exists for date."""
         cache_key = self.get_cache_key(market, target_date)
         try:
-            self._s3.head_object(Bucket=self._bucket, Key=cache_key)
+            self._s3_operation_with_retry('head_object', Bucket=self._bucket, Key=cache_key)
             return True
         except self._s3.exceptions.ClientError:
             return False
@@ -159,7 +211,7 @@ class ParquetCacheBuilder:
             S3 key of the baseline, or None if not found
         """
         try:
-            response = self._s3.head_object(Bucket=self._bucket, Key=delta_key)
+            response = self._s3_operation_with_retry('head_object', Bucket=self._bucket, Key=delta_key)
             metadata = response.get('Metadata', {})
             source_key = metadata.get('source-key')
 
@@ -314,27 +366,48 @@ class ParquetCacheBuilder:
         date_str = target_date.strftime("%Y-%m-%d")
         date_prefix = f"{self._source_prefix}/{date_str}/"
 
-        try:
-            # Use paginator to handle >1000 objects
-            paginator = self._s3.get_paginator('list_objects_v2')
-            pages = paginator.paginate(
-                Bucket=self._bucket,
-                Prefix=date_prefix
-            )
+        # Retry logic for handling credential expiration
+        max_retries = 2
+        retry_count = 0
+        
+        while retry_count <= max_retries:
+            try:
+                # Use paginator to handle >1000 objects
+                paginator = self._s3.get_paginator('list_objects_v2')
+                pages = paginator.paginate(
+                    Bucket=self._bucket,
+                    Prefix=date_prefix
+                )
 
-            # Collect all objects from all pages
-            all_objects = []
-            for page in pages:
-                if "Contents" in page:
-                    all_objects.extend(page["Contents"])
+                # Collect all objects from all pages
+                all_objects = []
+                for page in pages:
+                    if "Contents" in page:
+                        all_objects.extend(page["Contents"])
+                
+                # Success - break out of retry loop
+                break
 
-        except Exception as e:
-            error_msg = str(e)
-            # AWS credential expiration is a fatal error - fail immediately
-            if "ExpiredToken" in error_msg or "expired" in error_msg.lower():
-                logger.error(f"FATAL: AWS credentials expired while listing snapshots for {date_str}")
-                raise RuntimeError(f"AWS credentials expired: {e}") from e
-            logger.error(f"Failed to list snapshots for {date_str}: {e}")
+            except Exception as e:
+                error_msg = str(e)
+                # AWS credential expiration - try to refresh and retry
+                if "ExpiredToken" in error_msg or "expired" in error_msg.lower():
+                    if retry_count < max_retries:
+                        logger.warning(f"AWS credentials expired (attempt {retry_count + 1}/{max_retries + 1})")
+                        if self._refresh_credentials():
+                            retry_count += 1
+                            logger.info(f"Retrying list_objects_v2 for {date_str}...")
+                            continue
+                        else:
+                            logger.error("Failed to refresh credentials")
+                            raise RuntimeError(f"AWS credentials expired and refresh failed: {e}") from e
+                    else:
+                        logger.error(f"FATAL: AWS credentials expired after {max_retries} refresh attempts")
+                        raise RuntimeError(f"AWS credentials expired after {max_retries} retries: {e}") from e
+                
+                # Other errors - fail immediately
+                logger.error(f"Failed to list snapshots for {date_str}: {e}")
+                return False
             return False
 
         if not all_objects:
@@ -429,7 +502,7 @@ class ParquetCacheBuilder:
                 # Cleanup temp directory
                 import shutil
                 shutil.rmtree(temp_dir, ignore_errors=True)
-            
+
             # Report delta processing statistics
             if delta_failures:
                 logger.warning(
@@ -568,7 +641,7 @@ class ParquetCacheBuilder:
         """Read a single CSV.gz snapshot and parse into DataFrame."""
         try:
             # Download and decompress
-            response = self._s3.get_object(Bucket=self._bucket, Key=s3_key)
+            response = self._s3_operation_with_retry('get_object', Bucket=self._bucket, Key=s3_key)
             compressed_data = response["Body"].read()
 
             with gzip.open(BytesIO(compressed_data), "rt") as f:
@@ -657,7 +730,8 @@ class ParquetCacheBuilder:
             )
             buffer.seek(0)
 
-            self._s3.put_object(
+            self._s3_operation_with_retry(
+                'put_object',
                 Bucket=self._bucket,
                 Key=cache_key,
                 Body=buffer.getvalue(),
