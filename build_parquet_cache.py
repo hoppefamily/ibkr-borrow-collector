@@ -76,22 +76,22 @@ class ParquetCacheBuilder:
     def _s3_operation_with_retry(self, operation_name: str, max_retries: int = 2, **kwargs):
         """
         Execute an S3 operation with automatic credential refresh on expiration.
-        
+
         Args:
             operation_name: Name of the S3 client method (e.g., 'get_object', 'put_object')
             max_retries: Maximum number of credential refresh retries
             **kwargs: Arguments to pass to the S3 operation
-            
+
         Returns:
             Result of the S3 operation
         """
         retry_count = 0
-        
+
         while retry_count <= max_retries:
             try:
                 operation = getattr(self._s3, operation_name)
                 return operation(**kwargs)
-                
+
             except Exception as e:
                 error_msg = str(e)
                 # AWS credential expiration - try to refresh and retry
@@ -108,13 +108,44 @@ class ParquetCacheBuilder:
                     else:
                         logger.error(f"FATAL: AWS credentials expired after {max_retries} refresh attempts")
                         raise RuntimeError(f"AWS credentials expired after {max_retries} retries during {operation_name}: {e}") from e
-                
+
                 # Other errors - re-raise immediately
                 raise
 
     def get_cache_key(self, market: str, target_date: date) -> str:
         """Get S3 key for cached Parquet file."""
         return f"{self._cache_prefix}/{market}/{target_date.strftime('%Y-%m-%d')}.parquet"
+
+    def list_existing_caches(self, market: str) -> set:
+        """
+        List all existing cache files for a market with a single S3 list operation.
+
+        Returns:
+            Set of date objects for which caches exist
+        """
+        try:
+            prefix = f"{self._cache_prefix}/{market}/"
+            paginator = self._s3.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=self._bucket, Prefix=prefix)
+
+            existing_dates = set()
+            for page in pages:
+                if "Contents" in page:
+                    for obj in page["Contents"]:
+                        key = obj["Key"]
+                        # Extract date from key like: ibkr/parquet/usa/2026-01-30.parquet
+                        if key.endswith(".parquet"):
+                            filename = key.split("/")[-1]  # Get "2026-01-30.parquet"
+                            date_str = filename.replace(".parquet", "")  # Get "2026-01-30"
+                            try:
+                                existing_dates.add(datetime.strptime(date_str, "%Y-%m-%d").date())
+                            except ValueError:
+                                continue
+
+            return existing_dates
+        except Exception as e:
+            logger.error(f"Failed to list existing caches for {market}: {e}")
+            return set()
 
     def cache_exists(self, market: str, target_date: date) -> bool:
         """Check if Parquet cache exists for date."""
@@ -325,6 +356,33 @@ class ParquetCacheBuilder:
             logger.error(f"Failed to list available dates: {e}")
             return []
 
+    def find_missing_caches(self, market: str, start_date: date, end_date: date) -> List[date]:
+        """
+        Find dates with raw data but missing parquet cache.
+
+        Uses only 2 S3 list operations (one for raw dates, one for caches) instead of
+        individual HEAD requests for each date.
+
+        Args:
+            market: Market name (usa, germany, etc.)
+            start_date: Start of date range to check
+            end_date: End of date range to check
+
+        Returns:
+            List of dates missing caches, sorted
+        """
+        # Get all dates with raw data
+        all_raw_dates = self.list_available_dates(market)
+        dates_in_range = [d for d in all_raw_dates if start_date <= d <= end_date]
+
+        # Get all existing caches
+        existing_caches = self.list_existing_caches(market)
+
+        # Find missing
+        missing = [d for d in dates_in_range if d not in existing_caches]
+
+        return sorted(missing)
+
     def build_cache(
         self,
         market: str,
@@ -369,7 +427,7 @@ class ParquetCacheBuilder:
         # Retry logic for handling credential expiration
         max_retries = 2
         retry_count = 0
-        
+
         while retry_count <= max_retries:
             try:
                 # Use paginator to handle >1000 objects
@@ -384,7 +442,7 @@ class ParquetCacheBuilder:
                 for page in pages:
                     if "Contents" in page:
                         all_objects.extend(page["Contents"])
-                
+
                 # Success - break out of retry loop
                 break
 
@@ -404,7 +462,7 @@ class ParquetCacheBuilder:
                     else:
                         logger.error(f"FATAL: AWS credentials expired after {max_retries} refresh attempts")
                         raise RuntimeError(f"AWS credentials expired after {max_retries} retries: {e}") from e
-                
+
                 # Other errors - fail immediately
                 logger.error(f"Failed to list snapshots for {date_str}: {e}")
                 return False
@@ -453,6 +511,8 @@ class ParquetCacheBuilder:
                 if df is not None and not df.empty:
                     all_dfs.append(df)
                     logger.debug(f"  ✓ Read {len(df):,} rows from baseline {Path(snapshot_key).name}")
+                else:
+                    logger.debug(f"  ○ Baseline {Path(snapshot_key).name} returned no data")
             except Exception as e:
                 logger.warning(f"  ✗ Failed to read baseline {snapshot_key}: {e}")
                 continue
@@ -485,10 +545,11 @@ class ParquetCacheBuilder:
                             logger.warning(f"  ✗ Failed to reconstruct delta {delta_key}")
 
                     except ValueError as e:
-                        # Corrupt metadata - this is fatal
+                        # Corrupt metadata - skip this delta but continue processing
                         if "Corrupt metadata" in str(e):
-                            logger.error(f"FATAL: {e}")
-                            raise
+                            logger.warning(f"  ✗ Skipping delta with corrupt metadata: {Path(delta_key).name}")
+                            delta_failures.append((delta_key, str(e)))
+                            continue
                         # Other ValueErrors are non-fatal
                         delta_failures.append((delta_key, str(e)))
                         logger.warning(f"  ✗ Failed to process delta {delta_key}: {e}")
@@ -791,6 +852,12 @@ def main():
         action='store_true',
         help='List all available dates and exit'
     )
+    parser.add_argument(
+        '--missing',
+        type=int,
+        metavar='DAYS',
+        help='Find and build missing caches for last N days (efficient batch check)'
+    )
 
     args = parser.parse_args()
 
@@ -819,15 +886,30 @@ def main():
         dates = builder.list_available_dates(args.market)
         if dates:
             logger.info(f"Found {len(dates)} dates:")
+            # Batch check for efficiency
+            existing_caches = builder.list_existing_caches(args.market)
             for dt in dates:
-                cached = "✓" if builder.cache_exists(args.market, dt) else " "
+                cached = "✓" if dt in existing_caches else " "
                 logger.info(f"  [{cached}] {dt}")
         else:
             logger.warning("No dates found")
         return 0
 
     # Determine dates to process
-    if args.date:
+    if args.missing:
+        # Efficient missing cache detection
+        end_date = date.today() - timedelta(days=1)
+        start_date = end_date - timedelta(days=args.missing)
+
+        logger.info(f"Finding missing caches for {args.market} from {start_date} to {end_date}")
+        dates = builder.find_missing_caches(args.market, start_date, end_date)
+
+        if not dates:
+            logger.info("✓ All caches up to date")
+            return 0
+
+        logger.info(f"Found {len(dates)} missing caches")
+    elif args.date:
         dates = [args.date]
     elif args.start and args.end:
         dates = []
@@ -836,7 +918,7 @@ def main():
             dates.append(current)
             current += timedelta(days=1)
     else:
-        parser.error("Provide --date or --start/--end or --list-dates")
+        parser.error("Provide --date, --start/--end, --missing, or --list-dates")
 
     # Build caches
     logger.info("=" * 80)

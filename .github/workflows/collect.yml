@@ -6,6 +6,11 @@ on:
     - cron: '*/15 * * * *'
   workflow_dispatch:  # Allow manual trigger
 
+# Prevent concurrent collection runs to avoid race conditions
+concurrency:
+  group: ibkr-collector
+  cancel-in-progress: false
+
 # Required for OIDC authentication
 permissions:
   id-token: write
