@@ -100,30 +100,30 @@ class FileValidator:
     @staticmethod
     def has_data(filepath: str) -> bool:
         """Check if file contains actual data rows (not just header).
-        
+
         IBKR files have format:
             #BOF|date|time
             #SYM|CUR|NAME|...
             data rows here
             #EOF|count
-        
+
         Returns True if count > 0, False otherwise.
         """
         try:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 lines = f.readlines()
-                
+
             # Check last line for EOF marker with count
             if lines:
                 last_line = lines[-1].strip()
                 if last_line.startswith('#EOF|'):
                     count = int(last_line.split('|')[1])
                     return count > 0
-            
+
             # Fallback: count non-comment lines
             data_lines = [l for l in lines if not l.startswith('#')]
             return len(data_lines) > 0
-            
+
         except Exception as e:
             logger.warning(f"Error checking file content: {e}")
             return True  # Assume has data if can't determine
@@ -135,7 +135,7 @@ class MD5Verifier:
     @staticmethod
     def calculate_md5(filepath: str) -> str:
         """Calculate MD5 hash of a file.
-        
+
         Normalizes CRLF -> LF to match IBKR's MD5 calculation method.
         """
         md5_hash = hashlib.md5()
@@ -179,17 +179,13 @@ class MD5Verifier:
         actual = MD5Verifier.calculate_md5(filepath)
 
         if actual == expected:
-            logger.info(f"✓ MD5 verified: {actual}")
             return True
         else:
             if strict:
                 logger.error(f"✗ MD5 mismatch! Expected: {expected}, Got: {actual}")
                 return False
             else:
-                logger.warning("⚠ MD5 mismatch (non-fatal): Server MD5 may be outdated")
-                logger.warning(f"  Server: {expected}")
-                logger.warning(f"  Actual: {actual}")
-                logger.info(f"  Continuing with actual MD5: {actual}")
+                logger.warning(f"⚠ MD5 mismatch for {os.path.basename(filepath)}: {expected[:8]}... != {actual[:8]}...")
                 return True
 
 
@@ -721,9 +717,7 @@ def reconstruct_snapshot(s3_bucket: str, s3_key: str, output_file: str, cache_di
                 if 'original-md5' in metadata:
                     reconstructed_md5 = MD5Verifier.calculate_md5(output_file)
                     expected_md5 = metadata['original-md5']
-                    if reconstructed_md5 == expected_md5:
-                        logger.info(f"✓ MD5 verified: {reconstructed_md5}")
-                    else:
+                    if reconstructed_md5 != expected_md5:
                         logger.error(f"✗ MD5 mismatch: expected {expected_md5}, got {reconstructed_md5}")
                         return False
 
