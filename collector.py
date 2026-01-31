@@ -134,11 +134,16 @@ class MD5Verifier:
 
     @staticmethod
     def calculate_md5(filepath: str) -> str:
-        """Calculate MD5 hash of a file."""
+        """Calculate MD5 hash of a file.
+        
+        Normalizes CRLF -> LF to match IBKR's MD5 calculation method.
+        """
         md5_hash = hashlib.md5()
         with open(filepath, 'rb') as f:
-            for chunk in iter(lambda: f.read(4096), b''):
-                md5_hash.update(chunk)
+            content = f.read()
+            # Normalize line endings to match IBKR's MD5 calculation
+            content = content.replace(b'\r\n', b'\n')
+            md5_hash.update(content)
         return md5_hash.hexdigest()
 
     @staticmethod
