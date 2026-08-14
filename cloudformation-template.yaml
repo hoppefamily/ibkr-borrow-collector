@@ -28,8 +28,17 @@ Parameters:
     MinValue: 0
     MaxValue: 365
 
+  ExistingOIDCProviderArn:
+    Type: String
+    Description: >-
+      ARN of an existing GitHub OIDC provider to reuse. Only one provider per
+      issuer URL may exist per account, so pass this when another stack already
+      created it. Leave empty to have this stack create the provider.
+    Default: ''
+
 Conditions:
   HasBucketName: !Not [!Equals [!Ref BucketName, '']]
+  CreateOIDCProvider: !Equals [!Ref ExistingOIDCProviderArn, '']
   EnableExpiration: !Not [!Equals [!Ref DataRetentionDays, 0]]
   EnableGlacierTransition: !Not [!Equals [!Ref TransitionToGlacierDays, 0]]
 
@@ -136,9 +145,10 @@ Resources:
                   - 'ibkr/borrow/*'
                   - 'ibkr/parquet/*'
 
-  # GitHub OIDC Provider
+  # GitHub OIDC Provider (account-wide singleton; skipped when one is passed in)
   GitHubOIDCProvider:
     Type: AWS::IAM::OIDCProvider
+    Condition: CreateOIDCProvider
     Properties:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
@@ -161,7 +171,10 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !GetAtt GitHubOIDCProvider.Arn
+              Federated: !If
+                - CreateOIDCProvider
+                - !GetAtt GitHubOIDCProvider.Arn
+                - !Ref ExistingOIDCProviderArn
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
